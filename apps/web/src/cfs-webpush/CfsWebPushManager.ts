@@ -12,13 +12,29 @@ import SdkConfig from "../SdkConfig";
 const CFS_PUSH_SCOPE = "/cfs-push/";
 const CFS_PUSH_WORKER = `${CFS_PUSH_SCOPE}sw.js`;
 const STORAGE_KEY = "cfs_webpush_registration_v1";
+const CLEANUP_CACHE = "cfs-webpush-cleanup-v1";
+const CLEANUP_PATH = `${CFS_PUSH_SCOPE}cleanup-retry.json`;
+const SUBSCRIPTION_CHANGE_PATH = `${CFS_PUSH_SCOPE}subscription-change`;
 const DEFAULT_APP_ID = "com.collectorfigures.chat.web";
+const EXPECTED_GATEWAY = "https://chat-push.collectorfigures.com";
 
 interface StoredRegistration {
     appId: string;
     pushKey: string;
     endpoint: string;
     deviceId: string;
+}
+
+interface CleanupTarget {
+    appId: string;
+    pushKey: string;
+}
+
+interface CleanupTombstone {
+    deviceId?: string;
+    targets: CleanupTarget[];
+    needsEnumeration: boolean;
+    browserUnsubscribePending: boolean;
 }
 
 interface CfsWebPushConfig {
@@ -64,8 +80,18 @@ function getConfig(): CfsWebPushConfig | undefined {
     }
 
     const parsedGateway = new URL(gatewayUrl);
-    if (parsedGateway.protocol !== "https:") {
-        throw new Error("CFS Web Push gateway must use HTTPS");
+    if (
+        parsedGateway.protocol !== "https:" ||
+        parsedGateway.hostname !== "chat-push.collectorfigures.com" ||
+        parsedGateway.port !== "" ||
+        parsedGateway.username !== "" ||
+        parsedGateway.password !== "" ||
+        !["", "/"].includes(parsedGateway.pathname) ||
+        parsedGateway.search !== "" ||
+        parsedGateway.hash !== "" ||
+        parsedGateway.origin !== EXPECTED_GATEWAY
+    ) {
+        throw new Error(`CFS Web Push gateway must be exactly ${EXPECTED_GATEWAY}`);
     }
     if (appId !== DEFAULT_APP_ID) {
         throw new Error(`Unexpected CFS Web Push app_id: ${appId}`);
@@ -76,6 +102,31 @@ function getConfig(): CfsWebPushConfig | undefined {
         applicationServerKey,
         appId,
     };
+}
+
+function validateSubscriptionEndpoint(endpoint: string): void {
+    let parsed: URL;
+    try {
+        parsed = new URL(endpoint);
+    } catch {
+        throw new Error("Browser returned a malformed Web Push endpoint");
+    }
+    const hostname = parsed.hostname.toLowerCase();
+    const allowed =
+        hostname === "updates.push.services.mozilla.com" ||
+        hostname === "fcm.googleapis.com" ||
+        (hostname.endsWith(".notify.windows.com") && hostname !== "notify.windows.com");
+    if (
+        parsed.protocol !== "https:" ||
+        parsed.port !== "" ||
+        parsed.username !== "" ||
+        parsed.password !== "" ||
+        parsed.hash !== "" ||
+        parsed.pathname === "/" ||
+        !allowed
+    ) {
+        throw new Error("Browser returned a disallowed Web Push endpoint");
+    }
 }
 
 function readStoredRegistration(): StoredRegistration | undefined {
@@ -98,6 +149,80 @@ function clearStoredRegistration(): void {
     localStorage.removeItem(STORAGE_KEY);
 }
 
+function cleanupCacheUrl(path: string): string {
+    return new URL(path, window.location.origin).href;
+}
+
+async function readCleanupTombstone(): Promise<CleanupTombstone | undefined> {
+    if (!("caches" in window)) return undefined;
+    try {
+        const cache = await window.caches.open(CLEANUP_CACHE);
+        const response = await cache.match(cleanupCacheUrl(CLEANUP_PATH));
+        if (!response) return undefined;
+        const value = (await response.json()) as Partial<CleanupTombstone>;
+        const targets = Array.isArray(value.targets)
+            ? value.targets
+                  .filter(
+                      (target): target is CleanupTarget =>
+                          target?.appId === DEFAULT_APP_ID &&
+                          typeof target.pushKey === "string" &&
+                          target.pushKey.length > 0 &&
+                          target.pushKey.length <= 512,
+                  )
+                  .slice(0, 8)
+            : [];
+        return {
+            deviceId: typeof value.deviceId === "string" ? value.deviceId.slice(0, 255) : undefined,
+            targets,
+            needsEnumeration: value.needsEnumeration === true,
+            browserUnsubscribePending: value.browserUnsubscribePending === true,
+        };
+    } catch (error) {
+        logger.warn("Unable to read CFS Web Push cleanup tombstone", error);
+        return undefined;
+    }
+}
+
+async function writeCleanupTombstone(tombstone: CleanupTombstone): Promise<void> {
+    if (!("caches" in window)) {
+        logger.warn("Cache Storage is unavailable; CFS Web Push cleanup retry state cannot be persisted");
+        return;
+    }
+    const uniqueTargets = new Map<string, CleanupTarget>();
+    for (const target of tombstone.targets) {
+        if (target.appId !== DEFAULT_APP_ID || !target.pushKey || target.pushKey.length > 512) continue;
+        uniqueTargets.set(`${target.appId}\u0000${target.pushKey}`, target);
+    }
+    const value: CleanupTombstone = {
+        deviceId: tombstone.deviceId?.slice(0, 255),
+        targets: [...uniqueTargets.values()].slice(0, 8),
+        needsEnumeration: tombstone.needsEnumeration,
+        browserUnsubscribePending: tombstone.browserUnsubscribePending,
+    };
+    const cache = await window.caches.open(CLEANUP_CACHE);
+    await cache.put(
+        cleanupCacheUrl(CLEANUP_PATH),
+        new Response(JSON.stringify(value), {
+            headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+        }),
+    );
+}
+
+async function clearCleanupTombstone(): Promise<void> {
+    if (!("caches" in window)) return;
+    const cache = await window.caches.open(CLEANUP_CACHE);
+    await cache.delete(cleanupCacheUrl(CLEANUP_PATH));
+}
+
+async function consumeSubscriptionChangeMarker(): Promise<boolean> {
+    if (!("caches" in window)) return false;
+    const cache = await window.caches.open(CLEANUP_CACHE);
+    const marker = await cache.match(cleanupCacheUrl(SUBSCRIPTION_CHANGE_PATH));
+    if (!marker) return false;
+    await cache.delete(cleanupCacheUrl(SUBSCRIPTION_CHANGE_PATH));
+    return true;
+}
+
 function supportsWebPush(): boolean {
     return (
         window.isSecureContext && "Notification" in window && "serviceWorker" in navigator && "PushManager" in window
@@ -115,6 +240,63 @@ async function unsubscribeBrowser(registration?: ServiceWorkerRegistration): Pro
     const resolved = registration ?? (await navigator.serviceWorker.getRegistration(CFS_PUSH_SCOPE));
     const subscription = await resolved?.pushManager.getSubscription();
     if (subscription) await subscription.unsubscribe();
+}
+
+async function retryCfsWebPushCleanup(client: MatrixClient): Promise<boolean> {
+    const tombstone = await readCleanupTombstone();
+    if (!tombstone) return true;
+
+    const targets = new Map(tombstone.targets.map((target) => [`${target.appId}\u0000${target.pushKey}`, target]));
+    let needsEnumeration = tombstone.needsEnumeration;
+    if (needsEnumeration) {
+        try {
+            const { pushers } = await client.getPushers();
+            for (const pusher of pushers) {
+                if (pusher.app_id !== DEFAULT_APP_ID || pusher.kind !== "http") continue;
+                const data = pusher.data as Record<string, unknown> | undefined;
+                if (tombstone.deviceId && data?.device_id !== tombstone.deviceId) continue;
+                targets.set(`${pusher.app_id}\u0000${pusher.pushkey}`, {
+                    appId: pusher.app_id,
+                    pushKey: pusher.pushkey,
+                });
+            }
+            needsEnumeration = false;
+        } catch (error) {
+            logger.warn("Unable to enumerate stale CFS Web Push pushers", error);
+        }
+    }
+
+    const remaining: CleanupTarget[] = [];
+    for (const target of targets.values()) {
+        try {
+            await client.removePusher(target.pushKey, target.appId);
+        } catch (error) {
+            remaining.push(target);
+            logger.warn("Unable to remove stale CFS Web Push pusher", error);
+        }
+    }
+
+    let browserUnsubscribePending = tombstone.browserUnsubscribePending;
+    if (browserUnsubscribePending) {
+        try {
+            await unsubscribeBrowser();
+            browserUnsubscribePending = false;
+        } catch (error) {
+            logger.warn("Unable to remove stale browser Push subscription", error);
+        }
+    }
+
+    if (!needsEnumeration && remaining.length === 0 && !browserUnsubscribePending) {
+        await clearCleanupTombstone();
+        return true;
+    }
+    await writeCleanupTombstone({
+        deviceId: tombstone.deviceId,
+        targets: remaining,
+        needsEnumeration,
+        browserUnsubscribePending,
+    });
+    return false;
 }
 
 export async function getCfsWebPushStatus(): Promise<CfsWebPushStatus> {
@@ -157,6 +339,10 @@ export async function enableCfsWebPush(client: MatrixClient, requestPermission: 
 
     const deviceId = client.getDeviceId();
     if (!deviceId) throw new Error("Cannot register Web Push without a Matrix device ID");
+    if (!(await retryCfsWebPushCleanup(client))) {
+        throw new Error("Previous CFS Web Push cleanup is still pending");
+    }
+    await consumeSubscriptionChangeMarker();
 
     const registration = await getPushRegistration();
     const existing = await registration.pushManager.getSubscription();
@@ -173,6 +359,27 @@ export async function enableCfsWebPush(client: MatrixClient, requestPermission: 
     if (!endpoint || !pushKey || !auth) {
         await subscription.unsubscribe();
         throw new Error("Browser returned an incomplete Web Push subscription");
+    }
+    try {
+        validateSubscriptionEndpoint(endpoint);
+    } catch (error) {
+        await subscription.unsubscribe();
+        throw error;
+    }
+
+    const stored = readStoredRegistration();
+    if (stored?.appId === config.appId && stored.deviceId === deviceId && stored.pushKey !== pushKey) {
+        try {
+            await client.removePusher(stored.pushKey, stored.appId);
+        } catch (error) {
+            await writeCleanupTombstone({
+                deviceId,
+                targets: [{ appId: stored.appId, pushKey: stored.pushKey }],
+                needsEnumeration: false,
+                browserUnsubscribePending: false,
+            });
+            throw new AggregateError([error], "Stale CFS Web Push pusher cleanup failed");
+        }
     }
 
     const fingerprint = await accountFingerprint(config.appId, deviceId);
@@ -198,14 +405,36 @@ export async function enableCfsWebPush(client: MatrixClient, requestPermission: 
         },
         append: true,
     } as unknown as Parameters<MatrixClient["setPusher"]>[0];
-    await client.setPusher(pusher);
+    try {
+        await client.setPusher(pusher);
+    } catch (error) {
+        let browserUnsubscribePending = false;
+        const failures: unknown[] = [error];
+        if (!existing) {
+            try {
+                await subscription.unsubscribe();
+            } catch (unsubscribeError) {
+                browserUnsubscribePending = true;
+                failures.push(unsubscribeError);
+            }
+        }
+        await writeCleanupTombstone({
+            deviceId,
+            targets: [{ appId: config.appId, pushKey }],
+            needsEnumeration: false,
+            browserUnsubscribePending,
+        });
+        throw new AggregateError(failures, "Matrix pusher registration failed and was queued for cleanup");
+    }
 
     writeStoredRegistration({ appId: config.appId, pushKey, endpoint, deviceId });
+    await clearCleanupTombstone();
 }
 
 export async function ensureCfsWebPushForGrantedPermission(client: MatrixClient): Promise<void> {
     if (!supportsWebPush() || Notification.permission !== "granted") return;
     if (!getConfig()) return;
+    if (!(await retryCfsWebPushCleanup(client))) return;
     await enableCfsWebPush(client, false);
 }
 
@@ -220,6 +449,8 @@ export async function disableCfsWebPush(client: MatrixClient): Promise<void> {
     const appId = config?.appId ?? stored?.appId ?? DEFAULT_APP_ID;
     const deviceId = client.getDeviceId();
     const targets = new Map<string, string>();
+    const failures: unknown[] = [];
+    let needsEnumeration = false;
 
     if (stored?.appId === appId) targets.set(`${stored.appId}\u0000${stored.pushKey}`, stored.pushKey);
     try {
@@ -231,25 +462,40 @@ export async function disableCfsWebPush(client: MatrixClient): Promise<void> {
             targets.set(`${pusher.app_id}\u0000${pusher.pushkey}`, pusher.pushkey);
         }
     } catch (error) {
-        if (!stored) throw error;
+        needsEnumeration = true;
+        failures.push(error);
         logger.warn("Unable to enumerate CFS Web Push pushers; removing the locally tracked pusher", error);
     }
 
-    const failures: unknown[] = [];
+    const failedTargets: CleanupTarget[] = [];
     for (const pushKey of targets.values()) {
         try {
             await client.removePusher(pushKey, appId);
         } catch (error) {
             failures.push(error);
+            failedTargets.push({ appId, pushKey });
         }
     }
 
+    let browserUnsubscribePending = false;
     try {
         await unsubscribeBrowser();
     } catch (error) {
         failures.push(error);
+        browserUnsubscribePending = true;
     }
     clearStoredRegistration();
+
+    if (needsEnumeration || failedTargets.length > 0 || browserUnsubscribePending) {
+        await writeCleanupTombstone({
+            deviceId: deviceId ?? stored?.deviceId,
+            targets: failedTargets,
+            needsEnumeration,
+            browserUnsubscribePending,
+        });
+    } else {
+        await clearCleanupTombstone();
+    }
 
     if (failures.length > 0) {
         throw new AggregateError(failures, "CFS Web Push cleanup was incomplete");
@@ -257,8 +503,25 @@ export async function disableCfsWebPush(client: MatrixClient): Promise<void> {
 }
 
 export async function clearLocalCfsWebPushAfterSessionEnd(): Promise<void> {
+    const stored = readStoredRegistration();
+    const existing = await readCleanupTombstone();
     try {
         await unsubscribeBrowser();
+        if (existing) {
+            await writeCleanupTombstone({ ...existing, browserUnsubscribePending: false });
+        }
+    } catch (error) {
+        logger.warn("Browser Push subscription cleanup failed during local logout wipe", error);
+        try {
+            await writeCleanupTombstone({
+                deviceId: existing?.deviceId ?? stored?.deviceId,
+                targets: existing?.targets ?? (stored ? [{ appId: stored.appId, pushKey: stored.pushKey }] : []),
+                needsEnumeration: existing?.needsEnumeration ?? Boolean(stored),
+                browserUnsubscribePending: true,
+            });
+        } catch (tombstoneError) {
+            logger.warn("Unable to persist CFS Web Push cleanup retry state", tombstoneError);
+        }
     } finally {
         clearStoredRegistration();
     }

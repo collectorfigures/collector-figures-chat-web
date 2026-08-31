@@ -57,6 +57,8 @@ const worker = globalThis as unknown as CfsWorkerScope;
 const DEFAULT_TARGET = "/";
 const DEFAULT_TITLE = "Collector Figures";
 const DEFAULT_BODY = "You have a new message";
+const STATE_CACHE = "cfs-webpush-cleanup-v1";
+const SUBSCRIPTION_CHANGE_PATH = "/cfs-push/subscription-change";
 
 worker.addEventListener("install", (event) => event.waitUntil(worker.skipWaiting()));
 worker.addEventListener("activate", (event) => event.waitUntil(worker.clients.claim()));
@@ -77,9 +79,11 @@ worker.addEventListener("push", (event) => {
     event.waitUntil(
         worker.registration.showNotification(DEFAULT_TITLE, {
             body: DEFAULT_BODY,
-            icon: "/cfs-icons/icon-1080.jpg",
-            badge: "/cfs-icons/icon-1080.jpg",
-            tag: "cfs-new-message",
+            icon: "/cfs-icons/icon-192.png",
+            badge: "/cfs-icons/icon-192.png",
+            tag: payload.cfs_account_fingerprint
+                ? `cfs-new-message-${payload.cfs_account_fingerprint.slice(0, 24)}`
+                : "cfs-new-message",
             data,
         }),
     );
@@ -110,6 +114,11 @@ worker.addEventListener("notificationclick", (event) => {
 worker.addEventListener("pushsubscriptionchange", (event) => {
     event.waitUntil(
         (async () => {
+            const cache = await caches.open(STATE_CACHE);
+            await cache.put(
+                new URL(SUBSCRIPTION_CHANGE_PATH, worker.location.origin).href,
+                new Response("1", { headers: { "Cache-Control": "no-store" } }),
+            );
             const windows = await worker.clients.matchAll({ type: "window", includeUncontrolled: true });
             for (const client of windows) client.postMessage({ type: "cfs-webpush-subscription-changed" });
         })(),

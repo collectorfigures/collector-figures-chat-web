@@ -24,11 +24,23 @@ jobs:
             - name: Install locked dependencies
               run: pnpm install --frozen-lockfile
             - name: Verify CFS privacy and PWA contracts
-              run: node scripts/cfs-verify-webpush-contract.mjs
+              run: |
+                  node scripts/cfs-verify-webpush-contract.mjs
+                  node scripts/cfs-verify-release-workflow.mjs
             - name: Build workspace dependencies for focused tests
               run: pnpm exec nx run element-web:test:unit:prepare
-            - name: Run CFS Web Push unit tests
-              run: pnpm --dir apps/web exec vitest run src/cfs-webpush/CfsWebPushManager.test.ts src/cfs-webpush/payload.test.ts
+            - name: Run CFS and affected upstream regression tests
+              run: >-
+                  pnpm --dir apps/web exec vitest run
+                  src/cfs-webpush/CfsWebPushManager.test.ts
+                  src/cfs-webpush/payload.test.ts
+                  src/Lifecycle.test.ts
+                  src/utils/MediaEventHelper.test.ts
+                  src/stores/notifications/RoomNotificationState.test.ts
+                  src/settings/SettingsStore.test.ts
+                  src/hooks/useNotificationSettings.test.ts
+                  src/utils/Feedback.test.ts
+                  src/vector/rageshakesetup.test.ts
             - name: Lint CFS source
               run: >-
                   pnpm exec oxlint
@@ -38,14 +50,23 @@ jobs:
                   apps/web/src/cfs-webpush/payload.ts
                   apps/web/src/cfs-webpush/serviceworker.ts
                   apps/web/src/serviceworker/index.ts
+                  apps/web/src/Lifecycle.ts
+                  apps/web/src/vector/platform/WebPlatform.ts
                   apps/web/src/customisations/ComponentVisibility.ts
             - name: Build the production Web/PWA distribution
               run: pnpm --dir apps/web build
             - name: Verify generated artifacts
               run: |
                   test -f apps/web/webapp/cfs-push/sw.js
-                  test -f apps/web/webapp/cfs-icons/icon-1080.jpg
+                  test -f apps/web/webapp/cfs-icons/icon-192.png
+                  test -f apps/web/webapp/cfs-icons/icon-512.png
+                  test -f apps/web/webapp/cfs-icons/maskable-512.png
+                  test -f apps/web/webapp/cfs-icons/apple-touch-icon-180.png
                   test -f apps/web/webapp/cfs-help/index.html
                   test -f apps/web/webapp/manifest.json
-                  grep -q '<title>Collector Figures</title>' apps/web/webapp/index.html
-                  ! grep -Eqi 'access[_-]?token|MatrixClient|indexedDB|getAuthData' apps/web/webapp/cfs-push/sw.js
+                  grep -q '<title>Collector Figures Chat</title>' apps/web/webapp/index.html
+                  jq -e '.name == "Collector Figures Chat" and .short_name == "CFS Chat"' apps/web/webapp/manifest.json >/dev/null
+                  file apps/web/webapp/cfs-icons/icon-192.png | grep -q '192 x 192'
+                  file apps/web/webapp/cfs-icons/icon-512.png | grep -q '512 x 512'
+                  ! grep -Eqi 'access[_-]?token|MatrixClient|indexedDB|getAuthData' apps/web/webapp/cfs-push/sw.js apps/web/webapp/cfs-push/sw.js.map
+                  ! grep -Eqi 'access[_-]?token|Authorization|Bearer|idbLoad|tryDecryptToken|getAuthData|pickleKey|media/v3' apps/web/webapp/sw.js apps/web/webapp/sw.js.map

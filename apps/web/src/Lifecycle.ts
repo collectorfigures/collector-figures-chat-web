@@ -1113,7 +1113,12 @@ export async function onLoggedOut(): Promise<void> {
     // that can occur when components try to use a null client.
     dis.fire(Action.OnLoggedOut, true);
     stopMatrixClient();
-    await clearLocalCfsWebPushAfterSessionEnd();
+    try {
+        await clearLocalCfsWebPushAfterSessionEnd();
+    } catch (error) {
+        // Push cleanup is best-effort at this point. It must never prevent Matrix account/crypto storage deletion.
+        logger.warn("CFS Web Push local cleanup failed; continuing the mandatory local account wipe", error);
+    }
     await clearStorage({ deleteEverything: true });
     LifecycleCustomisations.onLoggedOutAndStorageCleared?.();
     await PlatformPeg.get()?.clearStorage();

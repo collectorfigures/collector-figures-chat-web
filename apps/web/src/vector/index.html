@@ -2,29 +2,31 @@
 <html lang="en" style="height: 100%;">
   <head>
     <meta charset="utf-8">
-    <title>Collector Figures</title>
-    <link rel="apple-touch-icon" href="/cfs-icons/icon-1080.jpg">
+    <title>Collector Figures Chat</title>
+    <link rel="apple-touch-icon" sizes="180x180" href="/cfs-icons/apple-touch-icon-180.png">
     <link rel="manifest" href="manifest.json">
     <meta name="referrer" content="no-referrer">
-    <link rel="icon" type="image/jpeg" sizes="1080x1080" href="/cfs-icons/icon-1080.jpg">
+    <link rel="icon" type="image/png" sizes="192x192" href="/cfs-icons/icon-192.png">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="apple-mobile-web-app-title" content="Collector Figures">
-    <meta name="application-name" content="Collector Figures">
+    <meta name="apple-mobile-web-app-title" content="CFS Chat">
+    <meta name="application-name" content="Collector Figures Chat">
     <meta name="theme-color" content="#000000">
     <meta property="og:image" content="<%= og_image_url %>" />
     <meta http-equiv="Content-Security-Policy" content="
-        default-src 'none';
-        style-src 'self' 'unsafe-inline' <%= csp_extra_source %>;
-        script-src 'self' 'wasm-unsafe-eval' https://www.recaptcha.net/recaptcha/ https://www.gstatic.com/recaptcha/ <%= csp_extra_source %>;
-        img-src * blob: data:;
-        connect-src * blob:;
-        font-src 'self' data: <%= csp_extra_source %>;
-        media-src * blob: data:;
-        child-src * blob: data:;
-        worker-src 'self' blob: <%= csp_extra_source %>;
-        frame-src * blob: data:;
-        form-action 'self' <%= csp_extra_source %>;
-        manifest-src 'self' <%= csp_extra_source %>;
+        default-src 'self';
+        base-uri 'none';
+        object-src 'none';
+        style-src 'self' 'unsafe-inline';
+        script-src 'self' 'wasm-unsafe-eval';
+        img-src 'self' blob: data: https://matrix.collectorfigures.com;
+        connect-src 'self' blob: https://matrix.collectorfigures.com wss://matrix.collectorfigures.com https://chat-auth.collectorfigures.com https://chat-oidc.collectorfigures.com https://chat-push.collectorfigures.com;
+        font-src 'self' data:;
+        media-src 'self' blob: data: https://matrix.collectorfigures.com;
+        child-src 'self' blob:;
+        worker-src 'self' blob:;
+        frame-src 'none';
+        form-action 'self' https://chat-auth.collectorfigures.com https://chat-oidc.collectorfigures.com;
+        manifest-src 'self';
     ">
     <% for (var i=0; i < htmlWebpackPlugin.files.css.length; i++) {
         var file = htmlWebpackPlugin.files.css[i];

@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type MatrixClient } from "matrix-js-sdk/src/matrix";
 
 import SdkConfig from "../SdkConfig";
-import { disableCfsWebPush, enableCfsWebPush } from "./CfsWebPushManager";
+import { clearLocalCfsWebPushAfterSessionEnd, disableCfsWebPush, enableCfsWebPush } from "./CfsWebPushManager";
 
 describe("CFS Web Push", () => {
     const unsubscribe = vi.fn().mockResolvedValue(true);
@@ -37,10 +37,20 @@ describe("CFS Web Push", () => {
         getRegistration: vi.fn().mockResolvedValue(registration),
     };
     const requestPermission = vi.fn().mockResolvedValue("granted");
+    const cacheEntries = new Map<string, Response>();
+    const cleanupCache = {
+        match: vi.fn(async (key: string) => cacheEntries.get(key)?.clone()),
+        put: vi.fn(async (key: string, value: Response) => {
+            cacheEntries.set(key, value.clone());
+        }),
+        delete: vi.fn(async (key: string) => cacheEntries.delete(key)),
+    };
+    const cacheStorage = { open: vi.fn().mockResolvedValue(cleanupCache) };
 
     beforeEach(() => {
         vi.clearAllMocks();
         localStorage.clear();
+        cacheEntries.clear();
         SdkConfig.put({
             cfs_webpush_enabled: true,
             cfs_webpush_gateway_url: "https://chat-push.collectorfigures.com",
@@ -58,6 +68,7 @@ describe("CFS Web Push", () => {
             serviceWorker,
             language: "en-US",
         } as unknown as Navigator);
+        Object.defineProperty(window, "caches", { configurable: true, value: cacheStorage });
         vi.spyOn(globalThis.crypto.subtle, "digest").mockResolvedValue(new Uint8Array(32).buffer);
     });
 
@@ -135,6 +146,122 @@ describe("CFS Web Push", () => {
 
         await expect(enableCfsWebPush(client, false)).rejects.toThrow("Notification permission is required");
         expect(requestPermission).not.toHaveBeenCalled();
+        expect(serviceWorker.register).not.toHaveBeenCalled();
+    });
+
+    it("rolls back a newly created browser subscription when setPusher fails", async () => {
+        pushManager.getSubscription.mockResolvedValueOnce(null);
+        const client = {
+            getDeviceId: () => "DEVICE-1",
+            setPusher: vi.fn().mockRejectedValue(new Error("setPusher failed")),
+            removePusher: vi.fn().mockResolvedValue(undefined),
+        } as unknown as MatrixClient;
+
+        await expect(enableCfsWebPush(client, true)).rejects.toThrow("queued for cleanup");
+
+        expect(pushManager.subscribe).toHaveBeenCalledTimes(1);
+        expect(unsubscribe).toHaveBeenCalledTimes(1);
+        expect(localStorage.getItem("cfs_webpush_registration_v1")).toBeNull();
+        expect(cleanupCache.put).toHaveBeenCalledTimes(1);
+    });
+
+    it("preserves retry state but clears local registration when cleanup operations fail", async () => {
+        const client = {
+            getDeviceId: () => "DEVICE-1",
+            setPusher: vi.fn().mockResolvedValue(undefined),
+            getPushers: vi.fn().mockRejectedValue(new Error("getPushers failed")),
+            removePusher: vi.fn().mockRejectedValue(new Error("removePusher failed")),
+        } as unknown as MatrixClient;
+        await enableCfsWebPush(client, true);
+        unsubscribe.mockRejectedValueOnce(new Error("unsubscribe failed"));
+
+        await expect(disableCfsWebPush(client)).rejects.toThrow("cleanup was incomplete");
+
+        expect(localStorage.getItem("cfs_webpush_registration_v1")).toBeNull();
+        const response = await cleanupCache.match(new URL("/cfs-push/cleanup-retry.json", window.location.origin).href);
+        await expect(response?.json()).resolves.toMatchObject({
+            deviceId: "DEVICE-1",
+            needsEnumeration: true,
+            browserUnsubscribePending: true,
+        });
+    });
+
+    it("never lets browser unsubscribe failure block the local logout wipe", async () => {
+        const client = {
+            getDeviceId: () => "DEVICE-1",
+            setPusher: vi.fn().mockResolvedValue(undefined),
+        } as unknown as MatrixClient;
+        await enableCfsWebPush(client, true);
+        unsubscribe.mockRejectedValueOnce(new Error("unsubscribe failed"));
+
+        await expect(clearLocalCfsWebPushAfterSessionEnd()).resolves.toBeUndefined();
+
+        expect(localStorage.getItem("cfs_webpush_registration_v1")).toBeNull();
+        const response = await cleanupCache.match(new URL("/cfs-push/cleanup-retry.json", window.location.origin).href);
+        await expect(response?.json()).resolves.toMatchObject({
+            browserUnsubscribePending: true,
+            needsEnumeration: true,
+        });
+    });
+
+    it("removes an exact stale pusher before refreshing the current subscription", async () => {
+        await cleanupCache.put(
+            new URL("/cfs-push/cleanup-retry.json", window.location.origin).href,
+            new Response(
+                JSON.stringify({
+                    deviceId: "DEVICE-OLD",
+                    targets: [{ appId: "com.collectorfigures.chat.web", pushKey: "stale-p256dh" }],
+                    needsEnumeration: false,
+                    browserUnsubscribePending: false,
+                }),
+            ),
+        );
+        const removePusher = vi.fn().mockResolvedValue(undefined);
+        const setPusher = vi.fn().mockResolvedValue(undefined);
+        const client = {
+            getDeviceId: () => "DEVICE-1",
+            setPusher,
+            removePusher,
+        } as unknown as MatrixClient;
+
+        await enableCfsWebPush(client, true);
+
+        expect(removePusher).toHaveBeenCalledWith("stale-p256dh", "com.collectorfigures.chat.web");
+        expect(setPusher).toHaveBeenCalledTimes(1);
+        expect(cleanupCache.delete).toHaveBeenCalled();
+    });
+
+    it("fails closed and unsubscribes a disallowed browser Push endpoint", async () => {
+        const badSubscription = {
+            ...subscription,
+            toJSON: () => ({
+                endpoint: "https://attacker.example/push",
+                keys: { p256dh: "test-p256dh", auth: "test-auth" },
+            }),
+        };
+        pushManager.getSubscription.mockResolvedValueOnce(badSubscription);
+        const client = { getDeviceId: () => "DEVICE-1" } as unknown as MatrixClient;
+
+        await expect(enableCfsWebPush(client, true)).rejects.toThrow("disallowed Web Push endpoint");
+        expect(unsubscribe).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+        "http://chat-push.collectorfigures.com",
+        "https://user@chat-push.collectorfigures.com",
+        "https://chat-push.collectorfigures.com:444",
+        "https://chat-push.collectorfigures.com/unexpected",
+        "https://other.collectorfigures.com",
+    ])("rejects a non-canonical gateway URL: %s", async (gatewayUrl) => {
+        SdkConfig.put({
+            cfs_webpush_enabled: true,
+            cfs_webpush_gateway_url: gatewayUrl,
+            cfs_webpush_application_server_key: "AQID",
+            cfs_webpush_app_id: "com.collectorfigures.chat.web",
+        });
+        const client = { getDeviceId: () => "DEVICE-1" } as unknown as MatrixClient;
+
+        await expect(enableCfsWebPush(client, true)).rejects.toThrow("must be exactly");
         expect(serviceWorker.register).not.toHaveBeenCalled();
     });
 });
