@@ -9,11 +9,12 @@ import { readFile } from "node:fs/promises";
 
 const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 
-const [manifestText, configText, manager, pushWorker, shellWorker, helpPage] = await Promise.all([
+const [manifestText, configText, manager, pushWorker, pushPayload, shellWorker, helpPage] = await Promise.all([
     read("apps/web/res/manifest.json"),
     read("apps/web/config.cfs.production.json"),
     read("apps/web/src/cfs-webpush/CfsWebPushManager.ts"),
     read("apps/web/src/cfs-webpush/serviceworker.ts"),
+    read("apps/web/src/cfs-webpush/payload.ts"),
     read("apps/web/src/serviceworker/index.ts"),
     read("apps/web/res/cfs-help/index.html"),
 ]);
@@ -42,6 +43,8 @@ assert.match(pushWorker, /Collector Figures/);
 assert.match(pushWorker, /You have a new message/);
 assert.doesNotMatch(pushWorker, /access[_-]?token|MatrixClient|localStorage|indexedDB|getAuthData/i);
 assert.doesNotMatch(pushWorker, /room_name|sender|content|email|matrix_id|mxid/i);
+assert.doesNotMatch(pushPayload, /access[_-]?token|MatrixClient|localStorage|indexedDB|getAuthData/i);
+assert.doesNotMatch(pushPayload, /room_name|sender|content|email|matrix_id|mxid/i);
 
 assert.match(shellWorker, /CFS_STATIC_PREFIXES/);
 assert.match(shellWorker, /url\.pathname\.startsWith\("\/_matrix\/"\)/);

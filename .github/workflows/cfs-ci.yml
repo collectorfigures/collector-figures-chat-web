@@ -25,13 +25,14 @@ jobs:
             - name: Verify CFS privacy and PWA contracts
               run: node scripts/cfs-verify-webpush-contract.mjs
             - name: Run CFS Web Push unit tests
-              run: pnpm --dir apps/web exec vitest run src/cfs-webpush/CfsWebPushManager.test.ts
+              run: pnpm --dir apps/web exec vitest run src/cfs-webpush/CfsWebPushManager.test.ts src/cfs-webpush/payload.test.ts
             - name: Lint CFS source
               run: >-
                   pnpm exec oxlint
                   apps/web/src/cfs-webpush/CfsWebPushManager.ts
                   apps/web/src/cfs-webpush/CfsWebPushManager.test.ts
                   apps/web/src/cfs-webpush/CfsWebPushSettings.tsx
+                  apps/web/src/cfs-webpush/payload.ts
                   apps/web/src/cfs-webpush/serviceworker.ts
                   apps/web/src/serviceworker/index.ts
                   apps/web/src/customisations/ComponentVisibility.ts

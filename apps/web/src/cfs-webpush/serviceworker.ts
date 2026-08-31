@@ -4,13 +4,7 @@ Copyright 2026 Collector Figures
 SPDX-License-Identifier: AGPL-3.0-only
 */
 
-interface CfsPushPayload {
-    cfs_schema?: number;
-    cfs_account_fingerprint?: string;
-    room_id?: string;
-    event_id?: string;
-    unread?: number;
-}
+import { cfsPushTargetPath, safeCfsPushPayload, type CfsPushPayload } from "./payload";
 
 interface CfsNotificationData {
     cfsSchema: 1;
@@ -64,33 +58,13 @@ const DEFAULT_TARGET = "/";
 const DEFAULT_TITLE = "Collector Figures";
 const DEFAULT_BODY = "You have a new message";
 
-function safePayload(raw: unknown): CfsPushPayload {
-    if (!raw || typeof raw !== "object") return {};
-    const value = raw as Record<string, unknown>;
-    return {
-        cfs_schema: value.cfs_schema === 1 ? 1 : undefined,
-        cfs_account_fingerprint:
-            typeof value.cfs_account_fingerprint === "string" ? value.cfs_account_fingerprint.slice(0, 64) : undefined,
-        room_id: typeof value.room_id === "string" ? value.room_id.slice(0, 512) : undefined,
-        event_id: typeof value.event_id === "string" ? value.event_id.slice(0, 512) : undefined,
-        unread: Number.isSafeInteger(value.unread) ? (value.unread as number) : undefined,
-    };
-}
-
-function targetPath(payload: CfsPushPayload): string {
-    if (!payload.room_id) return DEFAULT_TARGET;
-    const room = encodeURIComponent(payload.room_id);
-    const event = payload.event_id ? `/${encodeURIComponent(payload.event_id)}` : "";
-    return `/#/room/${room}${event}`;
-}
-
 worker.addEventListener("install", (event) => event.waitUntil(worker.skipWaiting()));
 worker.addEventListener("activate", (event) => event.waitUntil(worker.clients.claim()));
 
 worker.addEventListener("push", (event) => {
     let payload: CfsPushPayload = {};
     try {
-        payload = safePayload(event.data?.json());
+        payload = safeCfsPushPayload(event.data?.json());
     } catch {
         payload = {};
     }
@@ -98,7 +72,7 @@ worker.addEventListener("push", (event) => {
     const data: CfsNotificationData = {
         cfsSchema: 1,
         accountFingerprint: payload.cfs_account_fingerprint,
-        targetPath: targetPath(payload),
+        targetPath: cfsPushTargetPath(payload),
     };
     event.waitUntil(
         worker.registration.showNotification(DEFAULT_TITLE, {
