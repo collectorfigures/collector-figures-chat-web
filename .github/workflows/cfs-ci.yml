@@ -25,6 +25,8 @@ jobs:
               run: pnpm install --frozen-lockfile
             - name: Verify CFS privacy and PWA contracts
               run: node scripts/cfs-verify-webpush-contract.mjs
+            - name: Build workspace dependencies for focused tests
+              run: pnpm exec nx run element-web:test:unit:prepare
             - name: Run CFS Web Push unit tests
               run: pnpm --dir apps/web exec vitest run src/cfs-webpush/CfsWebPushManager.test.ts src/cfs-webpush/payload.test.ts
             - name: Lint CFS source
