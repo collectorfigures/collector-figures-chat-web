@@ -3,6 +3,8 @@
 Modification date: 2026-08-31
 
 - Rebrand the Web/PWA client as `Collector Figures` and use Collector Figures icons.
+- Replace upstream welcome/help/mobile-download surfaces with a CFS help page and PWA installation guidance; Element X is
+  disclosed only as an optional third-party client.
 - Fix the homeserver and SSO entry points; remove custom homeserver, open registration, public Matrix discovery, room/space
   creation, invitations, integrations, calls, and upstream native-app promotion from the supported CFS surface.
 - Add a dedicated CFS Web Push worker and Matrix pusher registration using

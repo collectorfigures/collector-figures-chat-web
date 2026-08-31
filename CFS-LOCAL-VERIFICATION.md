@@ -4,10 +4,11 @@ Date: 2026-08-31
 
 ```text
 Upstream source commit: c43ef70b55030287677d884f8a3073808c4301d9
-CFS Web Push contract: 20/20 PASS
+CFS Web Push/PWA contract: 28/28 PASS
 CFS Web Push unit tests: 3/3 PASS
 Production Webpack build: PASS
 Generated PWA/Push artifact contract: PASS
+CFS help page desktop/mobile visual QA: PASS
 CFS modified-source oxlint: PASS
 Actual credentials found: 0
 Deployment performed: NO

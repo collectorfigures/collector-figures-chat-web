@@ -14,13 +14,17 @@
     "branding": {
         "logo_link_url": "https://collectorfigures.com/",
         "auth_header_logo_url": "/cfs-icons/wordmark.png",
+        "welcome_background_url": "/cfs-icons/background.svg",
         "auth_footer_links": [
             { "text": "Privacy", "url": "https://collectorfigures.com/privacy-policy/" },
             { "text": "Support", "url": "mailto:support@collectorfigures.com" }
         ]
     },
+    "help_url": "/cfs-help/index.html",
+    "help_encryption_url": "/cfs-help/index.html#encryption",
+    "help_key_storage_url": "/cfs-help/index.html#recovery",
     "desktop_builds": { "available": false },
-    "mobile_builds": {},
+    "mobile_builds": { "ios": "", "android": "", "fdroid": "" },
     "integrations_ui_url": null,
     "integrations_rest_url": null,
     "integrations_widgets_urls": [],

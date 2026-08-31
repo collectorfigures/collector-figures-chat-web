@@ -41,6 +41,7 @@ jobs:
               run: |
                   test -f apps/web/webapp/cfs-push/sw.js
                   test -f apps/web/webapp/cfs-icons/icon-1080.jpg
+                  test -f apps/web/webapp/cfs-help/index.html
                   test -f apps/web/webapp/manifest.json
                   grep -q '<title>Collector Figures</title>' apps/web/webapp/index.html
                   ! grep -Eqi 'access[_-]?token|MatrixClient|indexedDB|getAuthData' apps/web/webapp/cfs-push/sw.js

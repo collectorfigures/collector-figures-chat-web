@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta name="color-scheme" content="dark" />
+        <meta name="referrer" content="no-referrer" />
+        <title>Collector Figures Chat Help</title>
+        <style>
+            :root {
+                font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+                color: #f5f5f5;
+                background: #050505;
+            }
+            * {
+                box-sizing: border-box;
+            }
+            body {
+                margin: 0;
+                min-height: 100vh;
+                background: radial-gradient(circle at 80% 0, #252529 0, #09090b 38%, #000 75%);
+            }
+            main {
+                width: min(760px, calc(100% - 40px));
+                margin: 0 auto;
+                padding: 64px 0 96px;
+            }
+            header {
+                display: flex;
+                align-items: center;
+                gap: 18px;
+                margin-bottom: 56px;
+            }
+            header img {
+                width: 64px;
+                height: 64px;
+                border-radius: 16px;
+            }
+            h1 {
+                margin: 0;
+                font-size: clamp(2rem, 6vw, 4rem);
+                letter-spacing: -0.055em;
+                line-height: 0.95;
+            }
+            h2 {
+                margin: 48px 0 12px;
+                font-size: 1.15rem;
+                letter-spacing: -0.02em;
+            }
+            p,
+            li {
+                color: #c8c8ce;
+                line-height: 1.65;
+            }
+            a {
+                color: #fff;
+                text-underline-offset: 4px;
+            }
+            .lead {
+                max-width: 640px;
+                font-size: 1.15rem;
+                color: #e4e4e7;
+            }
+            .notice {
+                margin: 32px 0;
+                padding: 20px 22px;
+                border: 1px solid #343438;
+                border-left: 3px solid #fff;
+                background: #111113;
+            }
+            ol,
+            ul {
+                padding-left: 1.25rem;
+            }
+            footer {
+                margin-top: 64px;
+                padding-top: 24px;
+                border-top: 1px solid #27272a;
+                color: #8f8f98;
+                font-size: 0.9rem;
+            }
+        </style>
+    </head>
+    <body>
+        <main>
+            <header>
+                <img src="/cfs-icons/icon-1080.jpg" alt="" />
+                <div>
+                    <h1>Collector Figures</h1>
+                    <p>Private community chat</p>
+                </div>
+            </header>
+
+            <p class="lead">
+                The Collector Figures Web/PWA is the official supported client. It works in a desktop or mobile browser
+                and can be installed to your home screen.
+            </p>
+
+            <h2>Install the PWA</h2>
+            <ul>
+                <li>Chrome or Edge: use <strong>Install app</strong> in the browser menu.</li>
+                <li>Android 13+ Chrome: open the browser menu and choose <strong>Install app</strong>.</li>
+                <li>iOS 18 Safari: use Share → <strong>Add to Home Screen</strong>, then launch the installed app.</li>
+            </ul>
+            <div class="notice">
+                On iPhone and iPad, background Web Push requires the Home Screen PWA. A normal Safari tab does not
+                provide the same closed-app notification capability.
+            </div>
+
+            <h2>Notifications</h2>
+            <p>
+                Open Settings → Notifications and enable Collector Figures Web Push. The system notification is
+                intentionally generic: it does not contain message text, email, or your public Matrix ID. Logging out
+                removes this browser's Matrix pusher and Push subscription.
+            </p>
+
+            <h2 id="encryption">Device verification</h2>
+            <p>
+                Verify a new browser or device with another trusted session whenever possible. A failed verification
+                attempt does not damage your account; return and use another trusted session or your Recovery Key.
+            </p>
+
+            <h2 id="recovery">Recovery Key</h2>
+            <p>
+                Save your Recovery Key in your password manager. Collector Figures support cannot recreate it or decrypt
+                your messages. If you reset cryptographic identity, previously encrypted history may become unavailable
+                on the reset device.
+            </p>
+
+            <h2>Optional Element X client</h2>
+            <p>
+                Official Element X may be used as an optional third-party Matrix client. Its name, icon, release
+                process, and Push infrastructure are operated by Element and are not controlled by Collector Figures.
+                The official supported Collector Figures experience is this Web/PWA.
+            </p>
+
+            <h2>Privacy and diagnostics</h2>
+            <p>
+                No product analytics are enabled. Diagnostic logs are not uploaded automatically. Only submit a
+                diagnostic file when you actively choose to do so, after reviewing it for personal information.
+            </p>
+
+            <h2>Support</h2>
+            <p>
+                Email <a href="mailto:support@collectorfigures.com">support@collectorfigures.com</a>. Read the
+                <a href="https://collectorfigures.com/privacy-policy/">Privacy Policy</a>.
+            </p>
+
+            <footer>
+                Collector Figures Chat uses the Matrix protocol and modified AGPL software derived from Element Web and
+                Sygnal. Open-source and license notices remain available with each release.
+            </footer>
+        </main>
+    </body>
+</html>

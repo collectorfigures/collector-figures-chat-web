@@ -9,12 +9,13 @@ import { readFile } from "node:fs/promises";
 
 const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 
-const [manifestText, configText, manager, pushWorker, shellWorker] = await Promise.all([
+const [manifestText, configText, manager, pushWorker, shellWorker, helpPage] = await Promise.all([
     read("apps/web/res/manifest.json"),
     read("apps/web/config.cfs.production.json"),
     read("apps/web/src/cfs-webpush/CfsWebPushManager.ts"),
     read("apps/web/src/cfs-webpush/serviceworker.ts"),
     read("apps/web/src/serviceworker/index.ts"),
+    read("apps/web/res/cfs-help/index.html"),
 ]);
 
 const manifest = JSON.parse(manifestText);
@@ -28,6 +29,8 @@ assert.equal(config.disable_guests, true);
 assert.deepEqual(config.room_directory.servers, []);
 assert.equal(config.cfs_webpush_app_id, "com.collectorfigures.chat.web");
 assert.equal(config.cfs_webpush_gateway_url, "https://chat-push.collectorfigures.com");
+assert.equal(config.help_url, "/cfs-help/index.html");
+assert.deepEqual(config.mobile_builds, { ios: "", android: "", fdroid: "" });
 
 assert.match(manager, /events_only:\s*true/);
 assert.match(manager, /format:\s*"event_id_only"/);
@@ -44,4 +47,10 @@ assert.match(shellWorker, /CFS_STATIC_PREFIXES/);
 assert.match(shellWorker, /url\.pathname\.startsWith\("\/_matrix\/"\)/);
 assert.doesNotMatch(shellWorker, /CFS_SHELL_PRECACHE[^;]*config\.json/s);
 
-console.log("CFS_WEBPUSH_CONTRACT_PASS checks=20 actual_credentials=0");
+assert.match(helpPage, /official supported client/);
+assert.match(helpPage, /optional third-party Matrix client/);
+assert.match(helpPage, /background Web Push requires the Home Screen PWA/);
+assert.match(helpPage, /No product analytics are enabled/);
+assert.doesNotMatch(helpPage, /posthog|sentry|analytics_endpoint/i);
+
+console.log("CFS_WEBPUSH_CONTRACT_PASS checks=28 actual_credentials=0");
