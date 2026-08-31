@@ -174,6 +174,10 @@ export default (env: string, argv: Record<string, any>): webpack.Configuration =
                 import: "./src/serviceworker/index.ts",
                 filename: "sw.js", // update WebPlatform if this changes
             },
+            cfspushserviceworker: {
+                import: "./src/cfs-webpush/serviceworker.ts",
+                filename: "cfs-push/sw.js",
+            },
             ...cssThemes,
         },
 
@@ -639,7 +643,7 @@ export default (env: string, argv: Record<string, any>): webpack.Configuration =
                 // HtmlWebpackPlugin will screw up our formatting like the names
                 // of the themes and which chunks we actually care about.
                 inject: false,
-                excludeChunks: ["mobileguide", "usercontent", "jitsi", "serviceworker"],
+                excludeChunks: ["mobileguide", "usercontent", "jitsi", "serviceworker", "cfspushserviceworker"],
                 minify: false,
                 templateParameters: {
                     og_image_url: ogImageUrl,
@@ -713,6 +717,7 @@ export default (env: string, argv: Record<string, any>): webpack.Configuration =
                     "res/manifest.json",
                     { from: "themes/**", context: path.resolve(__dirname, "res") },
                     { from: "vector-icons/**", context: path.resolve(__dirname, "res") },
+                    { from: "cfs-icons/**", context: path.resolve(__dirname, "res") },
                     { from: "decoder-ring/**", context: path.resolve(__dirname, "res") },
                     { from: "media/**", context: path.resolve(__dirname, "res/") },
                     { from: "config.json", noErrorOnMissing: true },

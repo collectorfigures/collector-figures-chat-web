@@ -1,0 +1,46 @@
+name: CFS Web source verification
+
+on:
+    pull_request:
+    push:
+        branches: [main]
+
+permissions:
+    contents: read
+
+jobs:
+    verify:
+        runs-on: ubuntu-24.04
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+            - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+              with:
+                  node-version: "24"
+            - name: Install the locked package manager
+              run: |
+                  corepack enable
+                  corepack prepare pnpm@11.20.0 --activate
+            - name: Install locked dependencies
+              run: pnpm install --frozen-lockfile
+            - name: Verify CFS privacy and PWA contracts
+              run: node scripts/cfs-verify-webpush-contract.mjs
+            - name: Run CFS Web Push unit tests
+              run: pnpm --dir apps/web exec vitest run src/cfs-webpush/CfsWebPushManager.test.ts
+            - name: Lint CFS source
+              run: >-
+                  pnpm exec oxlint
+                  apps/web/src/cfs-webpush/CfsWebPushManager.ts
+                  apps/web/src/cfs-webpush/CfsWebPushManager.test.ts
+                  apps/web/src/cfs-webpush/CfsWebPushSettings.tsx
+                  apps/web/src/cfs-webpush/serviceworker.ts
+                  apps/web/src/serviceworker/index.ts
+                  apps/web/src/customisations/ComponentVisibility.ts
+            - name: Build the production Web/PWA distribution
+              run: pnpm --dir apps/web build
+            - name: Verify generated artifacts
+              run: |
+                  test -f apps/web/webapp/cfs-push/sw.js
+                  test -f apps/web/webapp/cfs-icons/icon-1080.jpg
+                  test -f apps/web/webapp/manifest.json
+                  grep -q '<title>Collector Figures</title>' apps/web/webapp/index.html
+                  ! grep -Eqi 'access[_-]?token|MatrixClient|indexedDB|getAuthData' apps/web/webapp/cfs-push/sw.js

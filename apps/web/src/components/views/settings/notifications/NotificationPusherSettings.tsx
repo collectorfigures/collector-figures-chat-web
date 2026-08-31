@@ -21,6 +21,7 @@ import AccessibleButton from "../../elements/AccessibleButton";
 import LabelledCheckbox from "../../elements/LabelledCheckbox";
 import { SettingsIndent } from "../shared/SettingsIndent";
 import { SettingsSubsection, SettingsSubsectionText } from "../shared/SettingsSubsection";
+import { CfsWebPushSettings } from "../../../../cfs-webpush/CfsWebPushSettings";
 
 function generalTabButton(content: string): JSX.Element {
     return (
@@ -83,6 +84,7 @@ export function NotificationPusherSettings(): JSX.Element {
 
     return (
         <>
+            <CfsWebPushSettings />
             <SettingsSubsection
                 className="mx_NotificationPusherSettings"
                 heading={_t("settings|notifications|email_section")}

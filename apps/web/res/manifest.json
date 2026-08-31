@@ -1,60 +1,27 @@
 {
-    "name": "Element",
-    "short_name": "Element",
+    "id": "/",
+    "name": "Collector Figures",
+    "short_name": "Collector Figures",
+    "description": "Private Collector Figures community chat",
     "display": "standalone",
-    "theme_color": "#76CFA6",
-    "start_url": "index.html",
+    "background_color": "#000000",
+    "theme_color": "#000000",
+    "start_url": "/",
+    "scope": "/",
     "icons": [
         {
-            "src": "/vector-icons/24.png",
-            "sizes": "24x24",
-            "type": "image/png"
+            "src": "/cfs-icons/icon-1080.jpg",
+            "sizes": "1080x1080",
+            "type": "image/jpeg",
+            "purpose": "any"
         },
         {
-            "src": "/vector-icons/120.png",
-            "sizes": "120x120",
-            "type": "image/png"
-        },
-        {
-            "src": "/vector-icons/144.png",
-            "sizes": "144x144",
-            "type": "image/png"
-        },
-        {
-            "src": "/vector-icons/152.png",
-            "sizes": "152x152",
-            "type": "image/png"
-        },
-        {
-            "src": "/vector-icons/180.png",
-            "sizes": "180x180",
-            "type": "image/png"
-        },
-        {
-            "src": "/vector-icons/512.png",
-            "sizes": "512x512",
-            "type": "image/png"
-        },
-        {
-            "src": "/vector-icons/1024.png",
-            "sizes": "1024x1024",
-            "type": "image/png"
+            "src": "/cfs-icons/maskable.svg",
+            "sizes": "any",
+            "type": "image/svg+xml",
+            "purpose": "maskable"
         }
     ],
-    "related_applications": [
-        {
-            "platform": "play",
-            "url": "https://play.google.com/store/apps/details?id=im.vector.app",
-            "id": "im.vector.app"
-        },
-        {
-            "platform": "f-droid",
-            "url": "https://f-droid.org/repository/browse/?fdid=im.vector.app",
-            "id": "im.vector.app"
-        },
-        {
-            "platform": "itunes",
-            "url": "https://apps.apple.com/app/vector/id1083446067"
-        }
-    ]
+    "related_applications": [],
+    "prefer_related_applications": false
 }

@@ -1,0 +1,58 @@
+{
+    "default_server_config": {
+        "m.homeserver": {
+            "base_url": "https://matrix.collectorfigures.com",
+            "server_name": "chat.collectorfigures.com"
+        }
+    },
+    "disable_custom_urls": true,
+    "disable_guests": true,
+    "disable_3pid_login": true,
+    "disable_login_language_selector": false,
+    "force_verification": true,
+    "brand": "Collector Figures",
+    "branding": {
+        "logo_link_url": "https://collectorfigures.com/",
+        "auth_header_logo_url": "/cfs-icons/wordmark.png",
+        "auth_footer_links": [
+            { "text": "Privacy", "url": "https://collectorfigures.com/privacy-policy/" },
+            { "text": "Support", "url": "mailto:support@collectorfigures.com" }
+        ]
+    },
+    "desktop_builds": { "available": false },
+    "mobile_builds": {},
+    "integrations_ui_url": null,
+    "integrations_rest_url": null,
+    "integrations_widgets_urls": [],
+    "room_directory": { "servers": [] },
+    "show_labs_settings": false,
+    "default_federate": false,
+    "default_theme": "dark",
+    "bug_report_endpoint_url": "local",
+    "sso_redirect_options": {
+        "immediate": false,
+        "on_welcome_page": true,
+        "on_login_page": true
+    },
+    "element_call": {
+        "brand": "Collector Figures Call",
+        "disable": true,
+        "use_exclusively": false
+    },
+    "setting_defaults": {
+        "UIFeature.feedback": false,
+        "UIFeature.voip": false,
+        "UIFeature.widgets": false,
+        "UIFeature.identityServer": false,
+        "UIFeature.thirdPartyId": false,
+        "UIFeature.registration": false,
+        "UIFeature.passwordReset": false,
+        "UIFeature.deactivate": false,
+        "UIFeature.allowCreatingPublicRooms": false,
+        "UIFeature.allowCreatingPublicSpaces": false
+    },
+    "cfs_webpush_enabled": false,
+    "cfs_webpush_gateway_url": "https://chat-push.collectorfigures.com",
+    "cfs_webpush_application_server_key": "",
+    "cfs_webpush_app_id": "com.collectorfigures.chat.web"
+}

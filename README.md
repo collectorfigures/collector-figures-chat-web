@@ -7,7 +7,22 @@
 [![Vulnerabilities](https://sonarcloud.io/api/project_badges/measure?project=element-web&metric=vulnerabilities)](https://sonarcloud.io/summary/new_code?id=element-web)
 [![Bugs](https://sonarcloud.io/api/project_badges/measure?project=element-web&metric=bugs)](https://sonarcloud.io/summary/new_code?id=element-web)
 
-# Element
+# Collector Figures Chat Web/PWA
+
+This repository is the complete AGPL source for the Collector Figures branded Web/PWA client. It is based on Element
+Web v1.12.26 and keeps the upstream project history, license files, build system and dependency lock file.
+
+- Product: **Collector Figures**
+- Upstream tag: `v1.12.26`
+- Upstream commit: `c43ef70b55030287677d884f8a3073808c4301d9`
+- License for Collector Figures modifications: `AGPL-3.0-only`
+- Official Element X apps are optional third-party clients and are not Collector Figures branded apps.
+- Native Collector Figures iOS and Android apps are deferred and are not part of this repository.
+
+See [CFS-UPSTREAM.md](./CFS-UPSTREAM.md), [MODIFICATIONS.md](./MODIFICATIONS.md), and
+[OPEN-SOURCE-NOTICES.md](./OPEN-SOURCE-NOTICES.md) before building or redistributing this fork.
+
+## Upstream Element documentation
 
 Element (formerly known as Vector and Riot) is a Matrix web & desktop client built using the [Matrix
 JS SDK](https://github.com/matrix-org/matrix-js-sdk).

@@ -23,6 +23,18 @@ export interface ConfigOptions extends WebConfigJson {
      * This is not a real config field, we're just abusing the config structure to pass around a validated server config
      */
     validated_server_config?: ValidatedServerConfig;
+
+    /** Enable the Collector Figures Web Push integration. */
+    cfs_webpush_enabled?: boolean;
+
+    /** Base URL of the CFS Sygnal Web Push gateway. */
+    cfs_webpush_gateway_url?: string;
+
+    /** Public VAPID application server key. This value is not a secret. */
+    cfs_webpush_application_server_key?: string;
+
+    /** Matrix pusher app_id used only by the CFS Web/PWA client. */
+    cfs_webpush_app_id?: string;
 }
 
 /**

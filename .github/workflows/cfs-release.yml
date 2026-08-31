@@ -1,0 +1,61 @@
+name: CFS Web immutable release
+
+on:
+    push:
+        tags: ["cfs-web-v*"]
+
+permissions:
+    contents: read
+    packages: write
+    id-token: write
+
+jobs:
+    build-scan-publish:
+        runs-on: ubuntu-24.04
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+            - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+            - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+              with:
+                  registry: ghcr.io
+                  username: ${{ github.actor }}
+                  password: ${{ secrets.GITHUB_TOKEN }}
+            - name: Build and publish exact source tag
+              id: build
+              uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+              with:
+                  context: .
+                  file: apps/web/Dockerfile
+                  platforms: linux/amd64
+                  push: true
+                  tags: |
+                      ghcr.io/collectorfigures/collector-figures-chat-web:${{ github.ref_name }}
+                      ghcr.io/collectorfigures/collector-figures-chat-web:sha-${{ github.sha }}
+                  build-args: CFS_SOURCE_COMMIT=${{ github.sha }}
+                  provenance: mode=max
+                  sbom: true
+            - name: Scan the immutable release
+              uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+              with:
+                  image-ref: ghcr.io/collectorfigures/collector-figures-chat-web@${{ steps.build.outputs.digest }}
+                  format: json
+                  output: trivy.json
+                  severity: CRITICAL,HIGH
+                  ignore-unfixed: false
+                  exit-code: "1"
+            - name: Record immutable digest
+              if: always()
+              run: |
+                  printf '%s  %s\n' '${{ steps.build.outputs.digest }}' 'ghcr.io/collectorfigures/collector-figures-chat-web' > OCI-DIGEST.txt
+                  sha256sum trivy.json OCI-DIGEST.txt > SHA256SUMS.txt
+            - name: Upload release evidence
+              if: always()
+              uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+              with:
+                  name: cfs-web-${{ github.ref_name }}-evidence
+                  path: |
+                      OCI-DIGEST.txt
+                      SHA256SUMS.txt
+                      trivy.json
+                  if-no-files-found: error
+                  retention-days: 90

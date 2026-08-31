@@ -27,10 +27,16 @@ COPY --link --exclude=.git --exclude=apps/web/docker . /src
 RUN --mount=type=bind,source=.git,target=/src/.git /src/scripts/docker-package.sh
 
 # Copy the config now so that we don't create another layer in the app image
-RUN cp /src/apps/web/config.sample.json /src/apps/web/webapp/config.json
+RUN cp /src/apps/web/config.cfs.production.json /src/apps/web/webapp/config.json
 
 # App
 FROM nginxinc/nginx-unprivileged:alpine-slim@sha256:22f839c5fb4007dc24d203a170a9e03fc185d660bfefc34ac6823a7aef085cbc AS element_web
+
+ARG CFS_SOURCE_COMMIT=unknown
+LABEL org.opencontainers.image.title="Collector Figures Chat Web/PWA" \
+      org.opencontainers.image.source="https://github.com/collectorfigures/collector-figures-chat-web" \
+      org.opencontainers.image.licenses="AGPL-3.0-only" \
+      org.opencontainers.image.revision="${CFS_SOURCE_COMMIT}"
 
 # Need root user to install packages & manipulate the usr directory
 USER root

@@ -16,16 +16,42 @@ const serverSupportMap: {
     };
 } = {};
 
+const CFS_SHELL_CACHE = "cfs-shell-v1";
+const CFS_SHELL_PRECACHE = ["/", "/index.html", "/manifest.json", "/cfs-icons/icon-1080.jpg"];
+const CFS_STATIC_PREFIXES = ["/bundles/", "/fonts/", "/themes/", "/cfs-icons/"];
+const cfsWorkerRuntime = global as unknown as {
+    skipWaiting(): Promise<void>;
+    clients: { claim(): Promise<void> };
+};
+
 global.addEventListener("install", (event) => {
     // We skipWaiting() to update the service worker more frequently, particularly in development environments.
     // @ts-expect-error - service worker types are not available. See 'fetch' event handler.
-    event.waitUntil(skipWaiting());
+    event.waitUntil(
+        Promise.all([
+            cfsWorkerRuntime.skipWaiting(),
+            caches.open(CFS_SHELL_CACHE).then((cache) => cache.addAll(CFS_SHELL_PRECACHE)),
+        ]),
+    );
 });
 
 global.addEventListener("activate", (event) => {
     // We force all clients to be under our control, immediately. This could be old tabs.
     // @ts-expect-error - service worker types are not available. See 'fetch' event handler.
-    event.waitUntil(clients.claim());
+    event.waitUntil(
+        Promise.all([
+            cfsWorkerRuntime.clients.claim(),
+            caches
+                .keys()
+                .then((keys) =>
+                    Promise.all(
+                        keys
+                            .filter((key) => key.startsWith("cfs-shell-") && key !== CFS_SHELL_CACHE)
+                            .map((key) => caches.delete(key)),
+                    ),
+                ),
+        ]),
+    );
 });
 
 // @ts-expect-error - the service worker types conflict with the DOM types available through TypeScript. Many hours
@@ -41,6 +67,13 @@ global.addEventListener("fetch", (event: FetchEvent) => {
     // Note: ideally we'd keep the request headers etc, but in practice we can't even see those details.
     // See https://stackoverflow.com/a/59152482
     const url = new URL(event.request.url);
+
+    // CFS offline support is deliberately limited to the generic application shell. Matrix APIs, config.json,
+    // message bodies, media, access tokens and decrypted content are never added to this cache.
+    if (isCfsShellRequest(event.request, url)) {
+        event.respondWith(fetchCfsShell(event.request));
+        return;
+    }
 
     // We only intercept v3 download and thumbnail requests as presumably everything else is deliberate.
     // For example, `/_matrix/media/unstable` or `/_matrix/media/v3/preview_url` are something well within
@@ -95,6 +128,33 @@ global.addEventListener("fetch", (event: FetchEvent) => {
         })(),
     );
 });
+
+function isCfsShellRequest(request: Request, url: URL): boolean {
+    if (url.origin !== global.location.origin || url.pathname.startsWith("/_matrix/")) return false;
+    if (url.pathname === "/" || url.pathname === "/index.html" || url.pathname === "/manifest.json") return true;
+    return CFS_STATIC_PREFIXES.some((prefix) => url.pathname.startsWith(prefix));
+}
+
+async function fetchCfsShell(request: Request): Promise<Response> {
+    const cache = await caches.open(CFS_SHELL_CACHE);
+    if (request.mode === "navigate" || new URL(request.url).pathname === "/index.html") {
+        try {
+            const response = await fetch(request);
+            if (response.ok) await cache.put("/index.html", response.clone());
+            return response;
+        } catch {
+            const fallback = await cache.match("/index.html");
+            if (fallback) return fallback;
+            throw new Error("Collector Figures application shell is unavailable offline");
+        }
+    }
+
+    const cached = await cache.match(request);
+    if (cached) return cached;
+    const response = await fetch(request);
+    if (response.ok) await cache.put(request, response.clone());
+    return response;
+}
 
 async function tryUpdateServerSupportMap(clientApiUrl: string, accessToken?: string): Promise<void> {
     // only update if we don't know about it, or if the data is stale

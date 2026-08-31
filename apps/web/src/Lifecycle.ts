@@ -69,6 +69,7 @@ import { type OnLoggedInPayload } from "./dispatcher/payloads/OnLoggedInPayload.
 import { filterBoolean } from "./utils/arrays.ts";
 import { CallStatusListener } from "./CallStatusListener.ts";
 import { CallStore } from "./stores/CallStore.ts";
+import { clearLocalCfsWebPushAfterSessionEnd, disableCfsWebPush } from "./cfs-webpush/CfsWebPushManager.ts";
 
 const HOMESERVER_URL_KEY = "mx_hs_url";
 const ID_SERVER_URL_KEY = "mx_is_url";
@@ -970,6 +971,13 @@ export async function logout(): Promise<void> {
     }
 
     _isLoggingOut = true;
+    try {
+        await disableCfsWebPush(client);
+    } catch (error) {
+        // Logout must still proceed: revoking the Matrix device is safer than leaving an active session because
+        // a browser cannot currently reach its push endpoint. The incomplete cleanup is explicit and observable.
+        logger.warn("CFS Web Push cleanup was incomplete before logout", error);
+    }
     PlatformPeg.get()?.destroyPickleKey(client.getSafeUserId(), client.getDeviceId() ?? "");
 
     doLogout(client, oauth ?? null).then(onLoggedOut, (err) => {
@@ -1105,6 +1113,7 @@ export async function onLoggedOut(): Promise<void> {
     // that can occur when components try to use a null client.
     dis.fire(Action.OnLoggedOut, true);
     stopMatrixClient();
+    await clearLocalCfsWebPushAfterSessionEnd();
     await clearStorage({ deleteEverything: true });
     LifecycleCustomisations.onLoggedOutAndStorageCleared?.();
     await PlatformPeg.get()?.clearStorage();
