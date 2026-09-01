@@ -16,6 +16,7 @@ const [
     endpointFixturesText,
     manager,
     mutationCoordinator,
+    crossRealmTests,
     pushWorker,
     pushPayload,
     notificationGate,
@@ -31,6 +32,7 @@ const [
         read("apps/web/src/cfs-webpush/fixtures/cfs-webpush-endpoints.json"),
         read("apps/web/src/cfs-webpush/CfsWebPushManager.ts"),
         read("apps/web/src/cfs-webpush/mutationCoordinator.ts"),
+        read("apps/web/src/cfs-webpush/CfsWebPushCrossTab.test.ts"),
         read("apps/web/src/cfs-webpush/serviceworker.ts"),
         read("apps/web/src/cfs-webpush/payload.ts"),
         read("apps/web/src/cfs-webpush/notificationGate.ts"),
@@ -78,7 +80,7 @@ assert.match(manager, /Matrix pusher registration failed and was queued for clea
 assert.match(manager, /validateSubscriptionEndpoint/);
 assert.match(manager, /ENROLLMENT_KEY/);
 assert.match(manager, /state: "enabled"/);
-assert.match(manager, /state: "disabled"/);
+assert.match(manager, /clearEnrollment\(\)/);
 assert.match(manager, /ownerFingerprint/);
 assert.doesNotMatch(manager, /getPushers\(/);
 assert.equal(endpointFixtures.schema, "cfs-webpush-endpoint-fixtures/v2");
@@ -123,8 +125,28 @@ assert.match(mutationCoordinator, /cfs_webpush_mutation_v1/);
 assert.match(mutationCoordinator, /window\.localStorage\.setItem/);
 assert.match(mutationCoordinator, /window\.localStorage\.getItem/);
 assert.doesNotMatch(mutationCoordinator, /let mutationGeneration/);
-assert.ok(manager.indexOf("await client.setPusher(pusher)") < manager.indexOf("await writeActiveOwnerMarker"));
+assert.ok(manager.indexOf("await client.setPusher(pusher)") < manager.indexOf("await commitCfsWebPushOwnerState"));
 assert.match(manager, /await clearActiveOwnerMarker\(operation\)/);
+assert.match(manager, /commitCfsWebPushOwnerState/);
+assert.match(manager, /compareAndDeleteCfsWebPushOwnerState/);
+assert.match(manager, /operationId: operation\.operationId/);
+const ownerStateCommit = manager.slice(
+    manager.indexOf("async function commitCfsWebPushOwnerState"),
+    manager.indexOf("async function compareAndDeleteCfsWebPushOwnerState"),
+);
+assert.match(ownerStateCommit, /withCfsWebPushStateLock/);
+assert.ok(ownerStateCommit.indexOf("writeStoredRegistration") < ownerStateCommit.indexOf("writeEnrollment"));
+assert.ok(ownerStateCommit.indexOf("writeEnrollment") < ownerStateCommit.indexOf("cache.put"));
+for (const phase of [
+    "after-lock-assert-before-registration",
+    "after-registration-write-before-assert",
+    "after-enrollment-write-before-assert",
+    "active-owner-cache-write-pending",
+]) {
+    assert.match(crossRealmTests, new RegExp(phase));
+}
+assert.match(crossRealmTests, /cross_realm_shared_storage_simulation:\s*true/);
+assert.match(crossRealmTests, /real_two_page_browser_acceptance:\s*false/);
 const sessionLockHandler = lifecycle.slice(
     lifecycle.indexOf("export async function onSessionLockStolen"),
     lifecycle.indexOf("function checkSessionLock"),

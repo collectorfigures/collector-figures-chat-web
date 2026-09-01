@@ -185,13 +185,19 @@ describe("CFS Web Push", () => {
             },
         });
         expect(JSON.stringify(pusher)).not.toMatch(/content|body|email|sender|matrix_id|mxid|access_token/i);
-        expect(JSON.parse(localStorage.getItem("cfs_webpush_enrollment_v1")!)).toMatchObject({
+        const stored = JSON.parse(localStorage.getItem("cfs_webpush_registration_v1")!);
+        const enrollment = JSON.parse(localStorage.getItem("cfs_webpush_enrollment_v1")!);
+        const marker = await readActiveOwnerMarker();
+        expect(enrollment).toMatchObject({
             state: "enabled",
             deviceId: "DEVICE-A",
             ownerFingerprint: expect.stringMatching(/^[A-Za-z0-9_-]{22}$/),
+            operationId: expect.stringMatching(/^[0-9a-f-]{36}$/i),
         });
+        expect(stored.operationId).toBe(enrollment.operationId);
+        expect(marker?.operationId).toBe(enrollment.operationId);
         expect(requestPermission).not.toHaveBeenCalled();
-        await expect(readActiveOwnerMarker()).resolves.toMatchObject({
+        expect(marker).toMatchObject({
             cfs_schema: 1,
             ownerFingerprint: expect.stringMatching(/^[A-Za-z0-9_-]{22}$/),
         });
@@ -235,7 +241,7 @@ describe("CFS Web Push", () => {
         const pending = disableCfsWebPush(client);
         await vi.waitFor(() => expect(unsubscribe).toHaveBeenCalled());
         await expect(readActiveOwnerMarker()).resolves.toBeUndefined();
-        expect(localStorage.getItem("cfs_webpush_enrollment_v1")).toContain('"state":"disabled"');
+        expect(localStorage.getItem("cfs_webpush_enrollment_v1")).toBeNull();
 
         resolveUnsubscribe();
         await pending;
@@ -255,7 +261,7 @@ describe("CFS Web Push", () => {
         expect((await readTombstones()).length).toBe(0);
     });
 
-    it("sets enrollment disabled before cleanup and never restores it after failure", async () => {
+    it("clears enrollment before cleanup and never restores it after failure", async () => {
         const removePusher = vi.fn().mockRejectedValue(new Error("removePusher failed"));
         const client = makeClient({ removePusher });
         await enableCfsWebPush(client, true);
@@ -263,7 +269,7 @@ describe("CFS Web Push", () => {
 
         await expect(disableCfsWebPush(client)).rejects.toThrow("cleanup was incomplete");
 
-        expect(JSON.parse(localStorage.getItem("cfs_webpush_enrollment_v1")!)).toMatchObject({ state: "disabled" });
+        expect(localStorage.getItem("cfs_webpush_enrollment_v1")).toBeNull();
         expect(localStorage.getItem("cfs_webpush_registration_v1")).toBeNull();
         expect(await readTombstones()).toEqual([
             expect.objectContaining({
@@ -285,7 +291,7 @@ describe("CFS Web Push", () => {
         await ensureCfsWebPushForGrantedPermission(client);
 
         expect(setPusher).toHaveBeenCalledTimes(1);
-        expect(localStorage.getItem("cfs_webpush_enrollment_v1")).toContain('"state":"disabled"');
+        expect(localStorage.getItem("cfs_webpush_enrollment_v1")).toBeNull();
     });
 
     it("granted browser permission alone never enables Web Push", async () => {
@@ -432,8 +438,8 @@ describe("CFS Web Push", () => {
         await disableCfsWebPush(client);
         resolveEnsure();
 
-        await expect(pendingEnsure).rejects.toThrow("superseded by another page");
-        expect(localStorage.getItem("cfs_webpush_enrollment_v1")).toContain('"state":"disabled"');
+        await expect(pendingEnsure).rejects.toThrow("superseded");
+        expect(localStorage.getItem("cfs_webpush_enrollment_v1")).toBeNull();
         expect(localStorage.getItem("cfs_webpush_registration_v1")).toBeNull();
         await expect(readActiveOwnerMarker()).resolves.toBeUndefined();
     });

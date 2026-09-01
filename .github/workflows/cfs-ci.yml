@@ -75,6 +75,7 @@ jobs:
                   file apps/web/webapp/cfs-icons/icon-192.png | grep -q '192 x 192'
                   file apps/web/webapp/cfs-icons/icon-512.png | grep -q '512 x 512'
                   grep -q '/cfs-push/active-owner.json' apps/web/webapp/cfs-push/sw.js
+                  grep -q 'operationId' apps/web/webapp/cfs-push/sw.js
                   grep -q 'notificationclick' apps/web/webapp/cfs-push/sw.js
                   ! grep -Eqi 'access[_-]?token|MatrixClient|indexedDB|getAuthData' apps/web/webapp/cfs-push/sw.js apps/web/webapp/cfs-push/sw.js.map
                   ! grep -Eqi 'access[_-]?token|Authorization|Bearer|idbLoad|tryDecryptToken|getAuthData|pickleKey|media/v3' apps/web/webapp/sw.js apps/web/webapp/sw.js.map

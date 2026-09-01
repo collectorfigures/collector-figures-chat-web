@@ -36,12 +36,20 @@ interface StoredRegistration {
     endpoint: string;
     deviceId: string;
     ownerFingerprint: string;
+    operationId: string;
 }
 
 interface CfsWebPushEnrollment {
     state: "enabled" | "disabled";
     deviceId: string;
     ownerFingerprint: string;
+    operationId: string;
+}
+
+interface ActiveOwnerMarker {
+    cfs_schema: 1;
+    ownerFingerprint: string;
+    operationId: string;
 }
 
 interface CleanupTarget {
@@ -65,6 +73,28 @@ interface CfsWebPushConfig {
     gatewayUrl: string;
     applicationServerKey: string;
     appId: string;
+}
+
+export type CfsWebPushCommitPhase =
+    | "after-lock-assert-before-registration"
+    | "after-registration-write-before-assert"
+    | "after-enrollment-write-before-assert"
+    | "active-owner-cache-write-pending";
+
+type CfsWebPushCommitTestHook = (
+    phase: CfsWebPushCommitPhase,
+    operation: CfsWebPushMutation,
+) => Promise<void>;
+
+let commitTestHook: CfsWebPushCommitTestHook | undefined;
+
+/** @internal Test-only deterministic interleaving hook. */
+export function setCfsWebPushCommitTestHook(hook?: CfsWebPushCommitTestHook): void {
+    commitTestHook = hook;
+}
+
+async function runCommitTestHook(phase: CfsWebPushCommitPhase, operation: CfsWebPushMutation): Promise<void> {
+    if (commitTestHook) await commitTestHook(phase, operation);
 }
 
 async function waitForMutationIfPresent<T>(
@@ -176,6 +206,13 @@ export function validateSubscriptionEndpoint(endpoint: string): void {
     }
 }
 
+function isOperationId(value: unknown): value is string {
+    return (
+        typeof value === "string" &&
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
+    );
+}
+
 function readStoredRegistration(): StoredRegistration | undefined {
     try {
         const raw = localStorage.getItem(STORAGE_KEY);
@@ -187,7 +224,8 @@ function readStoredRegistration(): StoredRegistration | undefined {
             !parsed.endpoint ||
             !parsed.deviceId ||
             !parsed.ownerFingerprint ||
-            !/^[A-Za-z0-9_-]{22}$/.test(parsed.ownerFingerprint)
+            !/^[A-Za-z0-9_-]{22}$/.test(parsed.ownerFingerprint) ||
+            !isOperationId(parsed.operationId)
         ) {
             return undefined;
         }
@@ -214,7 +252,8 @@ function readEnrollment(): CfsWebPushEnrollment | undefined {
             !["enabled", "disabled"].includes(parsed.state ?? "") ||
             !parsed.deviceId ||
             !parsed.ownerFingerprint ||
-            !/^[A-Za-z0-9_-]{22}$/.test(parsed.ownerFingerprint)
+            !/^[A-Za-z0-9_-]{22}$/.test(parsed.ownerFingerprint) ||
+            !isOperationId(parsed.operationId)
         ) {
             return undefined;
         }
@@ -258,10 +297,14 @@ function cleanupCacheUrl(path: string, ownerFingerprint?: string): string {
     return url.href;
 }
 
-async function mutateActiveOwnerMarker<T>(operation: CfsWebPushMutation, action: () => Promise<T>): Promise<T> {
+async function withCfsWebPushStateLock<T>(action: () => Promise<T>): Promise<T> {
     if (!("locks" in navigator)) throw new Error("Web Locks is unavailable for cross-page Push ownership");
+    return navigator.locks.request("cfs-webpush-state-v1", { mode: "exclusive" }, action);
+}
+
+async function mutateActiveOwnerMarker<T>(operation: CfsWebPushMutation, action: () => Promise<T>): Promise<T> {
     return waitForCurrentCfsWebPushMutation(operation, () =>
-        navigator.locks.request("cfs-webpush-active-owner-v1", { mode: "exclusive" }, async () => {
+        withCfsWebPushStateLock(async () => {
             assertCurrentCfsWebPushMutation(operation);
             const result = await action();
             assertCurrentCfsWebPushMutation(operation);
@@ -270,26 +313,7 @@ async function mutateActiveOwnerMarker<T>(operation: CfsWebPushMutation, action:
     );
 }
 
-async function writeActiveOwnerMarker(
-    ownerFingerprint: string,
-    operation: CfsWebPushMutation,
-): Promise<void> {
-    if (!("caches" in window)) throw new Error("Cache Storage is unavailable for the active Push owner marker");
-    await mutateActiveOwnerMarker(operation, async () => {
-        const cache = await window.caches.open(CLEANUP_CACHE);
-        assertCurrentCfsWebPushMutation(operation);
-        await cache.put(
-            cleanupCacheUrl(ACTIVE_OWNER_PATH),
-            new Response(JSON.stringify({ cfs_schema: 1, ownerFingerprint, operationId: operation.operationId }), {
-                headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
-            }),
-        );
-        assertCurrentCfsWebPushMutation(operation);
-    });
-    assertCurrentCfsWebPushMutation(operation);
-}
-
-async function readActiveOwnerMarker(operation?: CfsWebPushMutation): Promise<string | undefined> {
+async function readActiveOwnerMarkerRecord(operation?: CfsWebPushMutation): Promise<ActiveOwnerMarker | undefined> {
     if (!("caches" in window)) return undefined;
     try {
         const cache = await waitForMutationIfPresent(operation, () => window.caches.open(CLEANUP_CACHE));
@@ -297,11 +321,12 @@ async function readActiveOwnerMarker(operation?: CfsWebPushMutation): Promise<st
             cache.match(cleanupCacheUrl(ACTIVE_OWNER_PATH)),
         );
         if (!response) return undefined;
-        const marker = (await waitForMutationIfPresent(operation, () => response.json())) as Record<string, unknown>;
+        const marker = (await waitForMutationIfPresent(operation, () => response.json())) as Partial<ActiveOwnerMarker>;
         return marker.cfs_schema === 1 &&
             typeof marker.ownerFingerprint === "string" &&
-            /^[A-Za-z0-9_-]{22}$/.test(marker.ownerFingerprint)
-            ? marker.ownerFingerprint
+            /^[A-Za-z0-9_-]{22}$/.test(marker.ownerFingerprint) &&
+            isOperationId(marker.operationId)
+            ? (marker as ActiveOwnerMarker)
             : undefined;
     } catch {
         return undefined;
@@ -319,23 +344,59 @@ async function clearActiveOwnerMarker(operation: CfsWebPushMutation): Promise<vo
     assertCurrentCfsWebPushMutation(operation);
 }
 
-async function clearOwnActiveOwnerMarker(
-    ownerFingerprint: string,
+async function commitCfsWebPushOwnerState(
+    registration: Omit<StoredRegistration, "operationId">,
+    enrollment: Omit<CfsWebPushEnrollment, "operationId">,
     operation: CfsWebPushMutation,
 ): Promise<void> {
-    if (!("caches" in window)) return;
-    await mutateActiveOwnerMarker(operation, async () => {
+    if (!("caches" in window)) throw new Error("Cache Storage is unavailable for the active Push owner marker");
+    await withCfsWebPushStateLock(async () => {
+        assertCurrentCfsWebPushMutation(operation);
+        await runCommitTestHook("after-lock-assert-before-registration", operation);
+        assertCurrentCfsWebPushMutation(operation);
+
+        writeStoredRegistration({ ...registration, operationId: operation.operationId });
+        await runCommitTestHook("after-registration-write-before-assert", operation);
+        assertCurrentCfsWebPushMutation(operation);
+
+        writeEnrollment({ ...enrollment, operationId: operation.operationId });
+        await runCommitTestHook("after-enrollment-write-before-assert", operation);
+        assertCurrentCfsWebPushMutation(operation);
+
         const cache = await window.caches.open(CLEANUP_CACHE);
-        const response = await cache.match(cleanupCacheUrl(ACTIVE_OWNER_PATH));
         assertCurrentCfsWebPushMutation(operation);
-        if (!response) return;
-        const marker = (await response.json()) as Record<string, unknown>;
-        assertCurrentCfsWebPushMutation(operation);
-        if (marker.ownerFingerprint !== ownerFingerprint || marker.operationId !== operation.operationId) return;
-        await cache.delete(cleanupCacheUrl(ACTIVE_OWNER_PATH));
+        const marker: ActiveOwnerMarker = {
+            cfs_schema: 1,
+            ownerFingerprint: registration.ownerFingerprint,
+            operationId: operation.operationId,
+        };
+        const markerWrite = cache.put(
+            cleanupCacheUrl(ACTIVE_OWNER_PATH),
+            new Response(JSON.stringify(marker), {
+                headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+            }),
+        );
+        await runCommitTestHook("active-owner-cache-write-pending", operation);
+        await markerWrite;
         assertCurrentCfsWebPushMutation(operation);
     });
     assertCurrentCfsWebPushMutation(operation);
+}
+
+async function compareAndDeleteCfsWebPushOwnerState(operation: CfsWebPushMutation): Promise<void> {
+    await withCfsWebPushStateLock(async () => {
+        if (readStoredRegistration()?.operationId === operation.operationId) clearStoredRegistration();
+        if (readEnrollment()?.operationId === operation.operationId) clearEnrollment();
+        if (!("caches" in window)) return;
+
+        const cache = await window.caches.open(CLEANUP_CACHE);
+        const response = await cache.match(cleanupCacheUrl(ACTIVE_OWNER_PATH));
+        if (!response) return;
+        const marker = (await response.json()) as Partial<ActiveOwnerMarker>;
+        if (marker.operationId === operation.operationId) {
+            await cache.delete(cleanupCacheUrl(ACTIVE_OWNER_PATH));
+        }
+    });
 }
 
 async function readCleanupTombstone(
@@ -535,13 +596,16 @@ export async function isCfsWebPushEnrollmentEnabledForClient(
     if (!stored || !enrollment || enrollment.state !== "enabled") return false;
     try {
         const owner = await resolveOwnerContext(client, config.appId, stored, operation);
+        const marker = await readActiveOwnerMarkerRecord(operation);
         return (
             stored.appId === config.appId &&
             stored.ownerFingerprint === owner.ownerFingerprint &&
             stored.deviceId === owner.deviceId &&
             enrollment.ownerFingerprint === owner.ownerFingerprint &&
             enrollment.deviceId === owner.deviceId &&
-            (await readActiveOwnerMarker(operation)) === owner.ownerFingerprint
+            stored.operationId === enrollment.operationId &&
+            marker?.operationId === stored.operationId &&
+            marker.ownerFingerprint === owner.ownerFingerprint
         );
     } catch {
         return false;
@@ -571,6 +635,37 @@ export async function getCfsWebPushStatus(client: MatrixClient): Promise<CfsWebP
         enabled: Boolean(subscription && ownerMatches),
         permission: Notification.permission,
     };
+}
+
+async function cleanSupersededCfsWebPushEnable(
+    client: MatrixClient,
+    owner: OwnerContext,
+    target: CleanupTarget,
+    operation: CfsWebPushMutation,
+    cause: unknown,
+): Promise<never> {
+    const failures: unknown[] = [cause];
+    try {
+        await client.removePusher(target.pushKey, target.appId);
+    } catch (removeError) {
+        failures.push(removeError);
+        try {
+            await writeCleanupTombstone({
+                deviceId: owner.deviceId,
+                ownerFingerprint: owner.ownerFingerprint,
+                targets: [target],
+                browserUnsubscribePending: false,
+            });
+        } catch (tombstoneError) {
+            failures.push(tombstoneError);
+        }
+    }
+    try {
+        await compareAndDeleteCfsWebPushOwnerState(operation);
+    } catch (stateError) {
+        failures.push(stateError);
+    }
+    throw new AggregateError(failures, "CFS Web Push enable was superseded and exact cleanup was attempted");
 }
 
 async function enableCfsWebPushMutation(
@@ -704,21 +799,9 @@ async function enableCfsWebPushMutation(
     } catch (error) {
         if (!isCurrentCfsWebPushMutation(operation)) {
             if (setPusherSucceeded) {
-                try {
-                    await client.removePusher(ownTarget.pushKey, ownTarget.appId);
-                } catch (removeError) {
-                    await writeCleanupTombstone({
-                        deviceId: owner.deviceId,
-                        ownerFingerprint: owner.ownerFingerprint,
-                        targets: [ownTarget],
-                        browserUnsubscribePending: false,
-                    });
-                    throw new AggregateError(
-                        [error, removeError],
-                        "Superseded CFS Web Push pusher was queued for exact cleanup",
-                    );
-                }
+                return cleanSupersededCfsWebPushEnable(client, owner, ownTarget, operation, error);
             }
+            await compareAndDeleteCfsWebPushOwnerState(operation);
             throw new AggregateError([error], "CFS Web Push enable was superseded by another page");
         }
 
@@ -748,60 +831,34 @@ async function enableCfsWebPushMutation(
 
     try {
         assertCurrentCfsWebPushMutation(operation);
-        writeStoredRegistration({
-            appId: config.appId,
-            pushKey,
-            endpoint,
-            deviceId: owner.deviceId,
-            ownerFingerprint: owner.ownerFingerprint,
-        });
-        assertCurrentCfsWebPushMutation(operation);
-        writeEnrollment({
-            state: "enabled",
-            deviceId: owner.deviceId,
-            ownerFingerprint: owner.ownerFingerprint,
-        });
-        assertCurrentCfsWebPushMutation(operation);
-        await writeActiveOwnerMarker(owner.ownerFingerprint, operation);
+        await commitCfsWebPushOwnerState(
+            {
+                appId: config.appId,
+                pushKey,
+                endpoint,
+                deviceId: owner.deviceId,
+                ownerFingerprint: owner.ownerFingerprint,
+            },
+            {
+                state: "enabled",
+                deviceId: owner.deviceId,
+                ownerFingerprint: owner.ownerFingerprint,
+            },
+            operation,
+        );
         assertCurrentCfsWebPushMutation(operation);
         await clearCleanupTombstone(owner.ownerFingerprint, operation);
         assertCurrentCfsWebPushMutation(operation);
     } catch (error) {
         if (!isCurrentCfsWebPushMutation(operation) || error instanceof SupersededCfsWebPushMutationError) {
-            try {
-                await client.removePusher(ownTarget.pushKey, ownTarget.appId);
-            } catch (removeError) {
-                await writeCleanupTombstone({
-                    deviceId: owner.deviceId,
-                    ownerFingerprint: owner.ownerFingerprint,
-                    targets: [ownTarget],
-                    browserUnsubscribePending: false,
-                });
-                throw new AggregateError(
-                    [error, removeError],
-                    "Superseded CFS Web Push pusher was queued for exact cleanup",
-                );
-            }
-            throw new AggregateError([error], "CFS Web Push enable was superseded by another page");
+            return cleanSupersededCfsWebPushEnable(client, owner, ownTarget, operation, error);
         }
 
-        assertCurrentCfsWebPushMutation(operation);
-        const currentEnrollment = readEnrollment();
-        if (currentEnrollment?.ownerFingerprint === owner.ownerFingerprint && currentEnrollment.state === "enabled") {
-            assertCurrentCfsWebPushMutation(operation);
-            clearEnrollment();
-            assertCurrentCfsWebPushMutation(operation);
-        }
-        if (readStoredRegistration()?.ownerFingerprint === owner.ownerFingerprint) {
-            assertCurrentCfsWebPushMutation(operation);
-            clearStoredRegistration();
-            assertCurrentCfsWebPushMutation(operation);
-        }
         const failures: unknown[] = [error];
         try {
-            await clearOwnActiveOwnerMarker(owner.ownerFingerprint, operation);
-        } catch (markerError) {
-            failures.push(markerError);
+            await compareAndDeleteCfsWebPushOwnerState(operation);
+        } catch (stateError) {
+            failures.push(stateError);
         }
         const targets: CleanupTarget[] = [];
         try {
@@ -893,7 +950,7 @@ async function disableCfsWebPushMutation(client: MatrixClient, operation: CfsWeb
     try {
         owner = await resolveOwnerContext(client, appId, stored, operation);
         assertCurrentCfsWebPushMutation(operation);
-        writeEnrollment({ state: "disabled", deviceId: owner.deviceId, ownerFingerprint: owner.ownerFingerprint });
+        clearEnrollment();
         assertCurrentCfsWebPushMutation(operation);
     } catch (error) {
         assertCurrentCfsWebPushMutation(operation);

@@ -61,7 +61,9 @@ async function readActiveOwner(): Promise<string | undefined> {
         const marker = (await response.json()) as Record<string, unknown>;
         return marker.cfs_schema === 1 &&
             typeof marker.ownerFingerprint === "string" &&
-            CFS_OWNER_FINGERPRINT_PATTERN.test(marker.ownerFingerprint)
+            CFS_OWNER_FINGERPRINT_PATTERN.test(marker.ownerFingerprint) &&
+            typeof marker.operationId === "string" &&
+            /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(marker.operationId)
             ? marker.ownerFingerprint
             : undefined;
     } catch {
