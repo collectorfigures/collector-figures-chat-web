@@ -6,7 +6,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 import { describe, expect, it, vi } from "vitest";
 
-import { showCfsNotificationForActiveOwner } from "./notificationGate";
+import { cfsNotificationClickTarget, showCfsNotificationForActiveOwner } from "./notificationGate";
 
 describe("CFS Push Service Worker owner gate", () => {
     const activeOwner = "ABCDEFGHIJKLMNOPQRSTUV";
@@ -51,5 +51,50 @@ describe("CFS Push Service Worker owner gate", () => {
                 data: expect.objectContaining({ accountFingerprint: activeOwner, cfsSchema: 1 }),
             }),
         );
+    });
+
+    it("drops a notification click after logout removes the active owner", () => {
+        expect(
+            cfsNotificationClickTarget(
+                { cfsSchema: 1, accountFingerprint: activeOwner, targetPath: "/#/room/%21room" },
+                undefined,
+                "https://chat.collectorfigures.com",
+            ),
+        ).toBeUndefined();
+    });
+
+    it("drops a stale notification click after an account switch", () => {
+        expect(
+            cfsNotificationClickTarget(
+                { cfsSchema: 1, accountFingerprint: "ZYXWVUTSRQPONMLKJIHGFE", targetPath: "/#/room/%21room" },
+                activeOwner,
+                "https://chat.collectorfigures.com",
+            ),
+        ).toBeUndefined();
+    });
+
+    it.each([
+        { cfsSchema: 2, accountFingerprint: activeOwner, targetPath: "/#/room/%21room" },
+        { cfsSchema: 1, accountFingerprint: "short", targetPath: "/#/room/%21room" },
+        { cfsSchema: 1, accountFingerprint: activeOwner, targetPath: "https://evil.example/" },
+        { cfsSchema: 1, accountFingerprint: activeOwner, targetPath: "/account" },
+        { cfsSchema: 1, accountFingerprint: activeOwner, targetPath: "/#/settings" },
+        { cfsSchema: 1, accountFingerprint: activeOwner, targetPath: "/#/room/%21room?unexpected" },
+    ])("drops malformed or external notification click data: $targetPath", (data) => {
+        expect(cfsNotificationClickTarget(data, activeOwner, "https://chat.collectorfigures.com")).toBeUndefined();
+    });
+
+    it("returns only an exact same-origin CFS room target for the active owner", () => {
+        expect(
+            cfsNotificationClickTarget(
+                {
+                    cfsSchema: 1,
+                    accountFingerprint: activeOwner,
+                    targetPath: "/#/room/%21room%3Achat.collectorfigures.com/%24event",
+                },
+                activeOwner,
+                "https://chat.collectorfigures.com",
+            ),
+        ).toBe("https://chat.collectorfigures.com/#/room/%21room%3Achat.collectorfigures.com/%24event");
     });
 });

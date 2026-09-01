@@ -33,6 +33,7 @@ jobs:
               run: >-
                   pnpm --dir apps/web exec vitest run
                   src/cfs-webpush/CfsWebPushManager.test.ts
+                  src/cfs-webpush/CfsWebPushCrossTab.test.ts
                   src/cfs-webpush/payload.test.ts
                   src/cfs-webpush/serviceworker.test.ts
                   src/Lifecycle.test.ts
@@ -47,7 +48,9 @@ jobs:
                   pnpm exec oxlint
                   apps/web/src/cfs-webpush/CfsWebPushManager.ts
                   apps/web/src/cfs-webpush/CfsWebPushManager.test.ts
+                  apps/web/src/cfs-webpush/CfsWebPushCrossTab.test.ts
                   apps/web/src/cfs-webpush/CfsWebPushSettings.tsx
+                  apps/web/src/cfs-webpush/mutationCoordinator.ts
                   apps/web/src/cfs-webpush/payload.ts
                   apps/web/src/cfs-webpush/notificationGate.ts
                   apps/web/src/cfs-webpush/serviceworker.test.ts
@@ -71,5 +74,7 @@ jobs:
                   jq -e '.name == "Collector Figures Chat" and .short_name == "CFS Chat"' apps/web/webapp/manifest.json >/dev/null
                   file apps/web/webapp/cfs-icons/icon-192.png | grep -q '192 x 192'
                   file apps/web/webapp/cfs-icons/icon-512.png | grep -q '512 x 512'
+                  grep -q '/cfs-push/active-owner.json' apps/web/webapp/cfs-push/sw.js
+                  grep -q 'notificationclick' apps/web/webapp/cfs-push/sw.js
                   ! grep -Eqi 'access[_-]?token|MatrixClient|indexedDB|getAuthData' apps/web/webapp/cfs-push/sw.js apps/web/webapp/cfs-push/sw.js.map
                   ! grep -Eqi 'access[_-]?token|Authorization|Bearer|idbLoad|tryDecryptToken|getAuthData|pickleKey|media/v3' apps/web/webapp/sw.js apps/web/webapp/sw.js.map

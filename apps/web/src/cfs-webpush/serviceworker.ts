@@ -5,13 +5,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 */
 
 import { CFS_OWNER_FINGERPRINT_PATTERN } from "./payload";
-import { showCfsNotificationForActiveOwner } from "./notificationGate";
-
-interface CfsNotificationData {
-    cfsSchema: 1;
-    accountFingerprint: string;
-    targetPath: string;
-}
+import { cfsNotificationClickTarget, showCfsNotificationForActiveOwner } from "./notificationGate";
 
 interface CfsWorkerClient {
     url: string;
@@ -55,7 +49,6 @@ interface CfsWorkerScope {
 }
 
 const worker = globalThis as unknown as CfsWorkerScope;
-const DEFAULT_TARGET = "/";
 const STATE_CACHE = "cfs-webpush-cleanup-v1";
 const SUBSCRIPTION_CHANGE_PATH = "/cfs-push/subscription-change";
 const ACTIVE_OWNER_PATH = "/cfs-push/active-owner.json";
@@ -98,12 +91,12 @@ worker.addEventListener("push", (event) => {
 
 worker.addEventListener("notificationclick", (event) => {
     event.notification.close();
-    const data = event.notification.data as Partial<CfsNotificationData> | undefined;
-    const path = data?.cfsSchema === 1 && typeof data.targetPath === "string" ? data.targetPath : DEFAULT_TARGET;
-    const target = new URL(path, worker.location.origin).href;
 
     event.waitUntil(
         (async () => {
+            const activeOwner = await readActiveOwner();
+            const target = cfsNotificationClickTarget(event.notification.data, activeOwner, worker.location.origin);
+            if (!target) return;
             const windows = await worker.clients.matchAll({ type: "window", includeUncontrolled: true });
             const existing = windows.find((client) => new URL(client.url).origin === worker.location.origin) as
                 | CfsWindowClient

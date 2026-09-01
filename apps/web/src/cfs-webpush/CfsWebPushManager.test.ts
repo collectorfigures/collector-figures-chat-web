@@ -18,9 +18,11 @@ import {
     ensureCfsWebPushForGrantedPermission,
     getCfsWebPushStatus,
     prepareCfsWebPushForAccountReplacement,
+    validateSubscriptionEndpoint,
 } from "./CfsWebPushManager";
 
 interface EndpointFixture {
+    case: string;
     provider?: string;
     reason?: string;
     endpoint: string;
@@ -143,6 +145,11 @@ describe("CFS Web Push", () => {
             ...navigator,
             serviceWorker,
             language: "en-US",
+            locks: {
+                request: vi.fn(async (_name: string, _options: LockOptions, callback: () => Promise<unknown>) =>
+                    callback(),
+                ),
+            },
         } as unknown as Navigator);
         Object.defineProperty(window, "caches", { configurable: true, value: cacheStorage });
     });
@@ -245,7 +252,7 @@ describe("CFS Web Push", () => {
         expect(localStorage.getItem("cfs_webpush_registration_v1")).toBeNull();
         expect(localStorage.getItem("cfs_webpush_enrollment_v1")).toBeNull();
         await expect(readActiveOwnerMarker()).resolves.toBeUndefined();
-        expect((await readTombstones()).length).toBe(1);
+        expect((await readTombstones()).length).toBe(0);
     });
 
     it("sets enrollment disabled before cleanup and never restores it after failure", async () => {
@@ -407,7 +414,7 @@ describe("CFS Web Push", () => {
         await expect(readActiveOwnerMarker()).resolves.toBeUndefined();
     });
 
-    it("concurrent Ensure cannot re-enable after Disable wins the generation guard", async () => {
+    it("concurrent Ensure cannot re-enable after Disable wins the shared operation guard", async () => {
         const setPusher = vi.fn().mockResolvedValue(undefined);
         const removePusher = vi.fn().mockResolvedValue(undefined);
         const client = makeClient({ setPusher, removePusher });
@@ -425,7 +432,7 @@ describe("CFS Web Push", () => {
         await disableCfsWebPush(client);
         resolveEnsure();
 
-        await expect(pendingEnsure).rejects.toThrow("superseded or could not persist owner state");
+        await expect(pendingEnsure).rejects.toThrow("superseded by another page");
         expect(localStorage.getItem("cfs_webpush_enrollment_v1")).toContain('"state":"disabled"');
         expect(localStorage.getItem("cfs_webpush_registration_v1")).toBeNull();
         await expect(readActiveOwnerMarker()).resolves.toBeUndefined();
@@ -520,11 +527,28 @@ describe("CFS Web Push", () => {
             real_browser_acceptance: false,
             safari_status: "fail_closed_pending_real_acceptance",
         });
-        expect(endpointFixtures.valid).toHaveLength(3);
+        expect(endpointFixtures.valid).toHaveLength(5);
         expect(endpointFixtures.invalid).toHaveLength(12);
         expect(endpointFixtures.provenance).toHaveProperty("chrome");
         expect(endpointFixtures.provenance).toHaveProperty("edge");
         expect(endpointFixtures.provenance).toHaveProperty("firefox");
+    });
+
+    it("outputs the canonical Web endpoint accept/reject matrix", () => {
+        const matrix = [...endpointFixtures.valid, ...endpointFixtures.invalid].map((fixture) => {
+            let accepted = true;
+            try {
+                validateSubscriptionEndpoint(fixture.endpoint);
+            } catch {
+                accepted = false;
+            }
+            return { case: fixture.case, accepted };
+        });
+        expect(matrix).toEqual([
+            ...endpointFixtures.valid.map((fixture) => ({ case: fixture.case, accepted: true })),
+            ...endpointFixtures.invalid.map((fixture) => ({ case: fixture.case, accepted: false })),
+        ]);
+        console.info(`CFS_ENDPOINT_MATRIX=${JSON.stringify(matrix)}`);
     });
 
     it("rejects an overlong provider endpoint", async () => {

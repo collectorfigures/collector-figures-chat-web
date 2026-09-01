@@ -73,6 +73,7 @@ import {
     clearLocalCfsWebPushAfterSessionEnd,
     disableCfsWebPush,
     prepareCfsWebPushForAccountReplacement,
+    supersedeCfsWebPushMutationForSessionLock,
 } from "./cfs-webpush/CfsWebPushManager.ts";
 
 const HOMESERVER_URL_KEY = "mx_hs_url";
@@ -124,6 +125,7 @@ export function setSessionLockNotStolen(): void {
  */
 export async function onSessionLockStolen(): Promise<void> {
     sessionLockStolen = true;
+    supersedeCfsWebPushMutationForSessionLock();
     stopMatrixClient();
 }
 

@@ -15,6 +15,7 @@ const [
     configText,
     endpointFixturesText,
     manager,
+    mutationCoordinator,
     pushWorker,
     pushPayload,
     notificationGate,
@@ -29,6 +30,7 @@ const [
         read("apps/web/config.cfs.production.json"),
         read("apps/web/src/cfs-webpush/fixtures/cfs-webpush-endpoints.json"),
         read("apps/web/src/cfs-webpush/CfsWebPushManager.ts"),
+        read("apps/web/src/cfs-webpush/mutationCoordinator.ts"),
         read("apps/web/src/cfs-webpush/serviceworker.ts"),
         read("apps/web/src/cfs-webpush/payload.ts"),
         read("apps/web/src/cfs-webpush/notificationGate.ts"),
@@ -83,14 +85,14 @@ assert.equal(endpointFixtures.schema, "cfs-webpush-endpoint-fixtures/v2");
 assert.equal(endpointFixtures.fixture_values, "synthetic_redactions");
 assert.equal(endpointFixtures.real_browser_acceptance, false);
 assert.equal(endpointFixtures.safari_status, "fail_closed_pending_real_acceptance");
-assert.equal(endpointFixtures.valid.length, 3);
+assert.equal(endpointFixtures.valid.length, 5);
 assert.equal(endpointFixtures.invalid.length, 12);
 assert.deepEqual(Object.keys(endpointFixtures.provenance).sort(), ["chrome", "edge", "firefox"]);
 assert.equal(endpointFixtures.provenance.chrome.redacted_shape, "https://fcm.googleapis.com/wp/<opaque>");
 assert.equal(endpointFixtures.provenance.edge.validation_boundary, "https_host_suffix_only_black_box_path_query");
 assert.equal(
     createHash("sha256").update(endpointFixturesText).digest("hex"),
-    "a10840295981d1b2f66400a95ed92d2342d0988d259dc049086319d7180e700e",
+    "9999f3e68b1bba37355fccd5231c8026a679d7550bff1cd7359c97eabcb4aab6",
 );
 assert.match(webPlatform, /isCfsWebPushEnrollmentEnabledForClient/);
 assert.ok(
@@ -109,14 +111,34 @@ assert.doesNotMatch(pushPayload, /access[_-]?token|MatrixClient|localStorage|ind
 assert.doesNotMatch(pushPayload, /room_name|sender|content|email|matrix_id|mxid/i);
 assert.match(pushPayload, /\^\[A-Za-z0-9_-\]\{22\}\$/);
 assert.match(notificationGate, /isCfsPushForActiveOwner/);
+assert.match(notificationGate, /cfsNotificationClickTarget/);
 assert.ok(
     notificationGate.indexOf("isCfsPushForActiveOwner") < notificationGate.indexOf("showNotification("),
 );
 assert.match(manager, /ACTIVE_OWNER_PATH/);
-assert.match(manager, /beginMutation/);
-assert.match(manager, /assertCurrentMutation/);
+assert.match(manager, /publishCfsWebPushMutation/);
+assert.match(manager, /waitForCurrentCfsWebPushMutation/);
+assert.match(manager, /isCurrentCfsWebPushMutation/);
+assert.match(mutationCoordinator, /cfs_webpush_mutation_v1/);
+assert.match(mutationCoordinator, /window\.localStorage\.setItem/);
+assert.match(mutationCoordinator, /window\.localStorage\.getItem/);
+assert.doesNotMatch(mutationCoordinator, /let mutationGeneration/);
 assert.ok(manager.indexOf("await client.setPusher(pusher)") < manager.indexOf("await writeActiveOwnerMarker"));
-assert.match(manager, /await clearActiveOwnerMarker\(\)/);
+assert.match(manager, /await clearActiveOwnerMarker\(operation\)/);
+const sessionLockHandler = lifecycle.slice(
+    lifecycle.indexOf("export async function onSessionLockStolen"),
+    lifecycle.indexOf("function checkSessionLock"),
+);
+assert.ok(
+    sessionLockHandler.indexOf("supersedeCfsWebPushMutationForSessionLock()") <
+        sessionLockHandler.indexOf("stopMatrixClient();"),
+);
+const notificationClickHandler = pushWorker.slice(
+    pushWorker.indexOf('worker.addEventListener("notificationclick"'),
+    pushWorker.indexOf('worker.addEventListener("pushsubscriptionchange"'),
+);
+assert.ok(notificationClickHandler.indexOf("await readActiveOwner()") < notificationClickHandler.indexOf("cfsNotificationClickTarget"));
+assert.ok(notificationClickHandler.indexOf("cfsNotificationClickTarget") < notificationClickHandler.indexOf("worker.clients.matchAll"));
 
 assert.match(shellWorker, /CFS_STATIC_PREFIXES/);
 assert.match(shellWorker, /url\.pathname\.startsWith\("\/_matrix\/"\)/);
@@ -134,8 +156,8 @@ assert.ok(
     lifecycle.indexOf("await prepareCfsWebPushForAccountReplacement") < lifecycle.indexOf("await doSetLoggedIn"),
 );
 assert.ok(
-    manager.indexOf("await disableCfsWebPush(client)") <
-        manager.indexOf("await clearLocalCfsWebPushAfterSessionEnd()"),
+    manager.indexOf("await disableCfsWebPushMutation(client, operation)") <
+        manager.indexOf("await clearLocalCfsWebPushAfterSessionEndMutation(operation)"),
 );
 assert.doesNotMatch(indexPage, /(?:img|connect|media|frame)-src \*/);
 for (const directive of ["base-uri 'none'", "object-src 'none'", "frame-src 'none'"]) {
