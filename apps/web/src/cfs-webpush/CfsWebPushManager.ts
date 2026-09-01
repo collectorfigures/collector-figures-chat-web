@@ -15,9 +15,24 @@ const STORAGE_KEY = "cfs_webpush_registration_v1";
 const ENROLLMENT_KEY = "cfs_webpush_enrollment_v1";
 const CLEANUP_CACHE = "cfs-webpush-cleanup-v1";
 const CLEANUP_PATH = `${CFS_PUSH_SCOPE}cleanup-retry.json`;
+const ACTIVE_OWNER_PATH = `${CFS_PUSH_SCOPE}active-owner.json`;
 const SUBSCRIPTION_CHANGE_PATH = `${CFS_PUSH_SCOPE}subscription-change`;
 const DEFAULT_APP_ID = "com.collectorfigures.chat.web";
 const EXPECTED_GATEWAY = "https://chat-push.collectorfigures.com";
+let mutationGeneration = 0;
+
+class SupersededCfsWebPushMutationError extends Error {}
+
+function beginMutation(): number {
+    mutationGeneration += 1;
+    return mutationGeneration;
+}
+
+function assertCurrentMutation(generation: number): void {
+    if (generation !== mutationGeneration) {
+        throw new SupersededCfsWebPushMutationError("CFS Web Push mutation was superseded");
+    }
+}
 
 interface StoredRegistration {
     appId: string;
@@ -118,6 +133,9 @@ function getConfig(): CfsWebPushConfig | undefined {
 }
 
 function validateSubscriptionEndpoint(endpoint: string): void {
+    if (endpoint.length === 0 || endpoint.length > 2048) {
+        throw new Error("Browser returned a disallowed Web Push endpoint");
+    }
     let parsed: URL;
     try {
         parsed = new URL(endpoint);
@@ -129,8 +147,7 @@ function validateSubscriptionEndpoint(endpoint: string): void {
         parsed.port !== "" ||
         parsed.username !== "" ||
         parsed.password !== "" ||
-        parsed.hash !== "" ||
-        parsed.pathname === "/"
+        parsed.hash !== ""
     ) {
         throw new Error("Browser returned a disallowed Web Push endpoint");
     }
@@ -139,12 +156,11 @@ function validateSubscriptionEndpoint(endpoint: string): void {
     const opaquePathToken = "[A-Za-z0-9:_-]{16,1024}";
     const mozillaPath = new RegExp(`^/wpush/v2/${opaquePathToken}$`);
     const fcmPath = new RegExp(`^/(?:fcm/send|wp)/${opaquePathToken}$`);
-    const windowsHost = /^[a-z0-9-]+\.notify\.windows\.com$/;
-    const windowsQuery = /^\?token=[A-Za-z0-9%._~-]{16,1900}$/;
+    const windowsHost = /^(?:[a-z0-9-]+\.)*notify\.windows\.com$/;
     const validProviderShape =
         (hostname === "updates.push.services.mozilla.com" && mozillaPath.test(parsed.pathname) && parsed.search === "") ||
         (hostname === "fcm.googleapis.com" && fcmPath.test(parsed.pathname) && parsed.search === "") ||
-        (windowsHost.test(hostname) && parsed.pathname === "/w/" && windowsQuery.test(parsed.search));
+        windowsHost.test(hostname);
     if (!validProviderShape) {
         throw new Error("Browser returned a disallowed Web Push endpoint");
     }
@@ -229,6 +245,40 @@ function cleanupCacheUrl(path: string, ownerFingerprint?: string): string {
     const url = new URL(path, window.location.origin);
     if (ownerFingerprint) url.searchParams.set("owner", ownerFingerprint);
     return url.href;
+}
+
+async function writeActiveOwnerMarker(ownerFingerprint: string): Promise<void> {
+    if (!("caches" in window)) throw new Error("Cache Storage is unavailable for the active Push owner marker");
+    const cache = await window.caches.open(CLEANUP_CACHE);
+    await cache.put(
+        cleanupCacheUrl(ACTIVE_OWNER_PATH),
+        new Response(JSON.stringify({ cfs_schema: 1, ownerFingerprint }), {
+            headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+        }),
+    );
+}
+
+async function readActiveOwnerMarker(): Promise<string | undefined> {
+    if (!("caches" in window)) return undefined;
+    try {
+        const cache = await window.caches.open(CLEANUP_CACHE);
+        const response = await cache.match(cleanupCacheUrl(ACTIVE_OWNER_PATH));
+        if (!response) return undefined;
+        const marker = (await response.json()) as Record<string, unknown>;
+        return marker.cfs_schema === 1 &&
+            typeof marker.ownerFingerprint === "string" &&
+            /^[A-Za-z0-9_-]{22}$/.test(marker.ownerFingerprint)
+            ? marker.ownerFingerprint
+            : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
+async function clearActiveOwnerMarker(): Promise<void> {
+    if (!("caches" in window)) return;
+    const cache = await window.caches.open(CLEANUP_CACHE);
+    await cache.delete(cleanupCacheUrl(ACTIVE_OWNER_PATH));
 }
 
 async function readCleanupTombstone(ownerFingerprint: string): Promise<CleanupTombstone | undefined> {
@@ -325,7 +375,12 @@ async function unsubscribeBrowser(registration?: ServiceWorkerRegistration): Pro
     if (!("serviceWorker" in navigator)) return;
     const resolved = registration ?? (await navigator.serviceWorker.getRegistration(CFS_PUSH_SCOPE));
     const subscription = await resolved?.pushManager.getSubscription();
-    if (subscription) await subscription.unsubscribe();
+    if (!subscription) return;
+    const removed = await subscription.unsubscribe();
+    if (removed === false) throw new Error("Browser Push subscription unsubscribe was rejected");
+    if (await resolved?.pushManager.getSubscription()) {
+        throw new Error("Browser Push subscription still exists after unsubscribe");
+    }
 }
 
 async function retryCfsWebPushCleanup(client: MatrixClient, owner: OwnerContext): Promise<boolean> {
@@ -385,7 +440,8 @@ export async function isCfsWebPushEnrollmentEnabledForClient(client: MatrixClien
             stored.ownerFingerprint === owner.ownerFingerprint &&
             stored.deviceId === owner.deviceId &&
             enrollment.ownerFingerprint === owner.ownerFingerprint &&
-            enrollment.deviceId === owner.deviceId
+            enrollment.deviceId === owner.deviceId &&
+            (await readActiveOwnerMarker()) === owner.ownerFingerprint
         );
     } catch {
         return false;
@@ -417,7 +473,11 @@ export async function getCfsWebPushStatus(client: MatrixClient): Promise<CfsWebP
     };
 }
 
-export async function enableCfsWebPush(client: MatrixClient, requestPermission: boolean): Promise<void> {
+async function enableCfsWebPushMutation(
+    client: MatrixClient,
+    requestPermission: boolean,
+    generation: number,
+): Promise<void> {
     const config = getConfig();
     if (!config) throw new Error("CFS Web Push is disabled");
     if (!supportsWebPush()) throw new Error("This browser does not support Web Push");
@@ -434,13 +494,28 @@ export async function enableCfsWebPush(client: MatrixClient, requestPermission: 
 
     const stored = readStoredRegistration();
     const owner = await resolveOwnerContext(client, config.appId, stored);
+    assertCurrentMutation(generation);
     if (!(await retryCfsWebPushCleanup(client, owner))) {
         throw new Error("Previous CFS Web Push cleanup is still pending");
     }
+    assertCurrentMutation(generation);
     await consumeSubscriptionChangeMarker();
 
     const registration = await getPushRegistration();
-    const existing = await registration.pushManager.getSubscription();
+    let existing = await registration.pushManager.getSubscription();
+    const existingOwnerBound = Boolean(
+        existing &&
+            stored?.appId === config.appId &&
+            stored.deviceId === owner.deviceId &&
+            stored.ownerFingerprint === owner.ownerFingerprint,
+    );
+    if (existing && !existingOwnerBound) {
+        await clearActiveOwnerMarker();
+        await unsubscribeBrowser(registration);
+        assertCurrentMutation(generation);
+        existing = await registration.pushManager.getSubscription();
+        if (existing) throw new Error("Unowned browser Push subscription could not be removed");
+    }
     const subscription =
         existing ??
         (await registration.pushManager.subscribe({
@@ -452,13 +527,13 @@ export async function enableCfsWebPush(client: MatrixClient, requestPermission: 
     const pushKey = serialized.keys?.p256dh;
     const auth = serialized.keys?.auth;
     if (!endpoint || !pushKey || !auth) {
-        await subscription.unsubscribe();
+        await unsubscribeBrowser(registration);
         throw new Error("Browser returned an incomplete Web Push subscription");
     }
     try {
         validateSubscriptionEndpoint(endpoint);
     } catch (error) {
-        await subscription.unsubscribe();
+        await unsubscribeBrowser(registration);
         throw error;
     }
 
@@ -503,6 +578,7 @@ export async function enableCfsWebPush(client: MatrixClient, requestPermission: 
         },
         append: true,
     } as unknown as Parameters<MatrixClient["setPusher"]>[0];
+    assertCurrentMutation(generation);
     try {
         await client.setPusher(pusher);
     } catch (error) {
@@ -510,7 +586,7 @@ export async function enableCfsWebPush(client: MatrixClient, requestPermission: 
         const failures: unknown[] = [error];
         if (!existing) {
             try {
-                await subscription.unsubscribe();
+                await unsubscribeBrowser(registration);
             } catch (unsubscribeError) {
                 browserUnsubscribePending = true;
                 failures.push(unsubscribeError);
@@ -525,22 +601,67 @@ export async function enableCfsWebPush(client: MatrixClient, requestPermission: 
         throw new AggregateError(failures, "Matrix pusher registration failed and was queued for cleanup");
     }
 
-    writeStoredRegistration({
-        appId: config.appId,
-        pushKey,
-        endpoint,
-        deviceId: owner.deviceId,
-        ownerFingerprint: owner.ownerFingerprint,
-    });
-    writeEnrollment({
-        state: "enabled",
-        deviceId: owner.deviceId,
-        ownerFingerprint: owner.ownerFingerprint,
-    });
-    await clearCleanupTombstone(owner.ownerFingerprint);
+    try {
+        assertCurrentMutation(generation);
+        writeStoredRegistration({
+            appId: config.appId,
+            pushKey,
+            endpoint,
+            deviceId: owner.deviceId,
+            ownerFingerprint: owner.ownerFingerprint,
+        });
+        writeEnrollment({
+            state: "enabled",
+            deviceId: owner.deviceId,
+            ownerFingerprint: owner.ownerFingerprint,
+        });
+        await writeActiveOwnerMarker(owner.ownerFingerprint);
+        assertCurrentMutation(generation);
+        await clearCleanupTombstone(owner.ownerFingerprint);
+    } catch (error) {
+        const currentEnrollment = readEnrollment();
+        if (currentEnrollment?.ownerFingerprint === owner.ownerFingerprint && currentEnrollment.state === "enabled") {
+            clearEnrollment();
+        }
+        if (readStoredRegistration()?.ownerFingerprint === owner.ownerFingerprint) clearStoredRegistration();
+        const failures: unknown[] = [error];
+        try {
+            await clearActiveOwnerMarker();
+        } catch (markerError) {
+            failures.push(markerError);
+        }
+        const targets: CleanupTarget[] = [];
+        try {
+            await client.removePusher(pushKey, config.appId);
+        } catch (removeError) {
+            targets.push({ appId: config.appId, pushKey });
+            failures.push(removeError);
+        }
+        let browserUnsubscribePending = false;
+        try {
+            await unsubscribeBrowser(registration);
+        } catch (unsubscribeError) {
+            browserUnsubscribePending = true;
+            failures.push(unsubscribeError);
+        }
+        if (targets.length > 0 || browserUnsubscribePending) {
+            await writeCleanupTombstone({
+                deviceId: owner.deviceId,
+                ownerFingerprint: owner.ownerFingerprint,
+                targets,
+                browserUnsubscribePending,
+            });
+        }
+        throw new AggregateError(failures, "CFS Web Push enable was superseded or could not persist owner state");
+    }
+}
+
+export async function enableCfsWebPush(client: MatrixClient, requestPermission: boolean): Promise<void> {
+    return enableCfsWebPushMutation(client, requestPermission, beginMutation());
 }
 
 export async function ensureCfsWebPushForGrantedPermission(client: MatrixClient): Promise<void> {
+    const generation = beginMutation();
     if (!supportsWebPush() || Notification.permission !== "granted") return;
     const config = getConfig();
     if (!config) return;
@@ -565,10 +686,20 @@ export async function ensureCfsWebPushForGrantedPermission(client: MatrixClient)
         return;
     }
     if (!(await retryCfsWebPushCleanup(client, owner))) return;
-    await enableCfsWebPush(client, false);
+    assertCurrentMutation(generation);
+    await enableCfsWebPushMutation(client, false, generation);
 }
 
 export async function disableCfsWebPush(client: MatrixClient): Promise<void> {
+    const generation = beginMutation();
+    const failures: unknown[] = [];
+    try {
+        await clearActiveOwnerMarker();
+    } catch (error) {
+        failures.push(error);
+    }
+    assertCurrentMutation(generation);
+
     let config: CfsWebPushConfig | undefined;
     try {
         config = getConfig();
@@ -577,36 +708,44 @@ export async function disableCfsWebPush(client: MatrixClient): Promise<void> {
     }
     const stored = readStoredRegistration();
     const appId = config?.appId ?? stored?.appId ?? DEFAULT_APP_ID;
+    let owner: OwnerContext | undefined;
     try {
-        const owner = await resolveOwnerContext(client, appId, stored);
+        owner = await resolveOwnerContext(client, appId, stored);
         writeEnrollment({ state: "disabled", deviceId: owner.deviceId, ownerFingerprint: owner.ownerFingerprint });
-        if (
-            !stored ||
-            stored.appId !== appId ||
-            stored.deviceId !== owner.deviceId ||
-            stored.ownerFingerprint !== owner.ownerFingerprint
-        ) {
-            throw new Error("Cannot clean up Web Push without an exact owner-bound pusher target");
-        }
+    } catch (error) {
+        clearEnrollment();
+        failures.push(error);
+    }
 
-        const failures: unknown[] = [];
-        const failedTargets: CleanupTarget[] = [];
+    let browserUnsubscribePending = false;
+    try {
+        await unsubscribeBrowser();
+    } catch (error) {
+        failures.push(error);
+        browserUnsubscribePending = true;
+    }
+    assertCurrentMutation(generation);
+
+    const failedTargets: CleanupTarget[] = [];
+    const exactTarget = Boolean(
+        owner &&
+            stored?.appId === appId &&
+            stored.deviceId === owner.deviceId &&
+            stored.ownerFingerprint === owner.ownerFingerprint,
+    );
+    if (exactTarget && owner && stored) {
         try {
             await client.removePusher(stored.pushKey, stored.appId);
         } catch (error) {
             failures.push(error);
             failedTargets.push({ appId: stored.appId, pushKey: stored.pushKey });
         }
+    } else {
+        failures.push(new Error("Cannot clean up Web Push without an exact owner-bound pusher target"));
+    }
+    clearStoredRegistration();
 
-        let browserUnsubscribePending = false;
-        try {
-            await unsubscribeBrowser();
-        } catch (error) {
-            failures.push(error);
-            browserUnsubscribePending = true;
-        }
-        clearStoredRegistration();
-
+    if (owner) {
         if (failedTargets.length > 0 || browserUnsubscribePending) {
             await writeCleanupTombstone({
                 deviceId: owner.deviceId,
@@ -617,45 +756,49 @@ export async function disableCfsWebPush(client: MatrixClient): Promise<void> {
         } else {
             await clearCleanupTombstone(owner.ownerFingerprint);
         }
+    }
 
-        if (failures.length > 0) {
-            throw new AggregateError(failures, "CFS Web Push cleanup was incomplete");
-        }
-    } catch (error) {
-        if (!readEnrollment() || readEnrollment()?.state !== "disabled") clearEnrollment();
-        throw error;
+    if (failures.length > 0) {
+        throw new AggregateError(failures, "CFS Web Push cleanup was incomplete");
     }
 }
 
 export async function clearLocalCfsWebPushAfterSessionEnd(): Promise<void> {
+    const generation = beginMutation();
     const stored = readStoredRegistration();
     const enrollment = readEnrollment();
     clearEnrollment();
     const ownerFingerprint = enrollment?.ownerFingerprint ?? stored?.ownerFingerprint;
     const deviceId = enrollment?.deviceId ?? stored?.deviceId;
-    if (!ownerFingerprint || !deviceId) {
-        clearStoredRegistration();
-        return;
+    try {
+        await clearActiveOwnerMarker();
+    } catch (error) {
+        logger.warn("Unable to clear the active CFS Web Push owner marker during logout", error);
     }
+    assertCurrentMutation(generation);
 
-    const existing = await readCleanupTombstone(ownerFingerprint);
-    const targets = existing?.targets ??
-        (stored?.ownerFingerprint === ownerFingerprint ? [{ appId: stored.appId, pushKey: stored.pushKey }] : []);
+    const existing = ownerFingerprint ? await readCleanupTombstone(ownerFingerprint) : undefined;
+    const targets =
+        existing?.targets ??
+        (ownerFingerprint && stored?.ownerFingerprint === ownerFingerprint
+            ? [{ appId: stored.appId, pushKey: stored.pushKey }]
+            : []);
     try {
         await unsubscribeBrowser();
-        if (targets.length > 0) {
+        if (ownerFingerprint && deviceId && targets.length > 0) {
             await writeCleanupTombstone({
                 deviceId,
                 ownerFingerprint,
                 targets,
                 browserUnsubscribePending: false,
             });
-        } else {
+        } else if (ownerFingerprint) {
             await clearCleanupTombstone(ownerFingerprint);
         }
     } catch (error) {
         logger.warn("Browser Push subscription cleanup failed during local logout wipe", error);
         try {
+            if (!ownerFingerprint || !deviceId) throw new Error("No exact owner available for cleanup retry state");
             await writeCleanupTombstone({
                 deviceId,
                 ownerFingerprint,
@@ -669,4 +812,15 @@ export async function clearLocalCfsWebPushAfterSessionEnd(): Promise<void> {
         clearStoredRegistration();
         clearEnrollment();
     }
+}
+
+export async function prepareCfsWebPushForAccountReplacement(client?: MatrixClient): Promise<void> {
+    if (client) {
+        try {
+            await disableCfsWebPush(client);
+        } catch (error) {
+            logger.warn("CFS Web Push cleanup was incomplete before replacing the account", error);
+        }
+    }
+    await clearLocalCfsWebPushAfterSessionEnd();
 }

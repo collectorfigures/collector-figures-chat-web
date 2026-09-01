@@ -69,10 +69,26 @@ import { type OnLoggedInPayload } from "./dispatcher/payloads/OnLoggedInPayload.
 import { filterBoolean } from "./utils/arrays.ts";
 import { CallStatusListener } from "./CallStatusListener.ts";
 import { CallStore } from "./stores/CallStore.ts";
-import { clearLocalCfsWebPushAfterSessionEnd, disableCfsWebPush } from "./cfs-webpush/CfsWebPushManager.ts";
+import {
+    clearLocalCfsWebPushAfterSessionEnd,
+    disableCfsWebPush,
+    prepareCfsWebPushForAccountReplacement,
+} from "./cfs-webpush/CfsWebPushManager.ts";
 
 const HOMESERVER_URL_KEY = "mx_hs_url";
 const ID_SERVER_URL_KEY = "mx_is_url";
+
+async function overwriteLogin(typed: OverwriteLoginPayload): Promise<void> {
+    try {
+        await prepareCfsWebPushForAccountReplacement(MatrixClientPeg.get() ?? undefined);
+    } catch (error) {
+        logger.warn("CFS Web Push cleanup failed before overwriting the login", error);
+    }
+
+    // Mandatory account and crypto storage replacement must continue even when Push cleanup is incomplete.
+    stopMatrixClient(false);
+    await doSetLoggedIn(typed.credentials, true, true);
+}
 
 dis.register((payload) => {
     if (payload.action === Action.TriggerLogout) {
@@ -80,16 +96,7 @@ dis.register((payload) => {
         onLoggedOut();
     } else if (payload.action === Action.OverwriteLogin) {
         const typed = <OverwriteLoginPayload>payload;
-        // Stop the current client before overwriting the login.
-        // If not done it might be impossible to clear the storage, as the
-        // rust crypto backend might be holding an open connection to the indexeddb store.
-        // We also use the `unsetClient` flag to false, because at this point we are
-        // already in the logged in flows of the `MatrixChat` component, and it will
-        // always expect to have a client (calls to `MatrixClientPeg.safeGet()`).
-        // If we unset the client and the component is updated,  the render will fail and unmount everything.
-        // (The module dialog closes and fires a `aria_unhide_main_app` that will trigger a re-render)
-        stopMatrixClient(false);
-        doSetLoggedIn(typed.credentials, true, true).catch((e) => {
+        void overwriteLogin(typed).catch((e) => {
             // XXX we might want to fire a new event here to let the app know that the login failed ?
             // The module api could use it to display a message to the user.
             logger.warn("Failed to overwrite login", e);

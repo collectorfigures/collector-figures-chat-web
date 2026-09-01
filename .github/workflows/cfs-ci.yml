@@ -34,6 +34,7 @@ jobs:
                   pnpm --dir apps/web exec vitest run
                   src/cfs-webpush/CfsWebPushManager.test.ts
                   src/cfs-webpush/payload.test.ts
+                  src/cfs-webpush/serviceworker.test.ts
                   src/Lifecycle.test.ts
                   src/utils/MediaEventHelper.test.ts
                   src/stores/notifications/RoomNotificationState.test.ts
@@ -48,6 +49,8 @@ jobs:
                   apps/web/src/cfs-webpush/CfsWebPushManager.test.ts
                   apps/web/src/cfs-webpush/CfsWebPushSettings.tsx
                   apps/web/src/cfs-webpush/payload.ts
+                  apps/web/src/cfs-webpush/notificationGate.ts
+                  apps/web/src/cfs-webpush/serviceworker.test.ts
                   apps/web/src/cfs-webpush/serviceworker.ts
                   apps/web/src/serviceworker/index.ts
                   apps/web/src/Lifecycle.ts

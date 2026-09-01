@@ -1,7 +1,27 @@
 {
-  "schema": "cfs-webpush-endpoint-fixtures/v1",
-  "tokens": "synthetic",
+  "schema": "cfs-webpush-endpoint-fixtures/v2",
+  "fixture_values": "synthetic_redactions",
+  "real_browser_acceptance": false,
   "safari_status": "fail_closed_pending_real_acceptance",
+  "provenance": {
+    "chrome": {
+      "provider": "fcm",
+      "redacted_shape": "https://fcm.googleapis.com/wp/<opaque>",
+      "opaque_capability_retained": false
+    },
+    "firefox": {
+      "provider": "mozilla_autopush",
+      "redacted_shape": "https://updates.push.services.mozilla.com/wpush/v2/<opaque>",
+      "opaque_capability_retained": false
+    },
+    "edge": {
+      "provider": "windows_wns",
+      "redacted_shape": "https://<variable-subdomain>.notify.windows.com/<black-box>",
+      "opaque_capability_retained": false,
+      "validation_boundary": "https_host_suffix_only_black_box_path_query",
+      "source": "https://learn.microsoft.com/en-us/windows/apps/develop/notifications/push-notifications/wns-overview"
+    }
+  },
   "valid": [
     {
       "provider": "mozilla",
@@ -9,25 +29,25 @@
     },
     {
       "provider": "fcm",
-      "endpoint": "https://fcm.googleapis.com/fcm/send/eYcfsFcmOpaqueToken1234567890"
+      "endpoint": "https://fcm.googleapis.com/wp/eYcfsFcmOpaqueToken1234567890"
     },
     {
       "provider": "windows",
-      "endpoint": "https://wns2-am3p.notify.windows.com/w/?token=BQYAAABcfsWindowsOpaqueToken1234567890"
+      "endpoint": "https://db3.notify.windows.com/?token=BQYAAABcfsWindowsOpaqueToken1234567890"
     }
   ],
   "invalid": [
     {
       "reason": "userinfo",
-      "endpoint": "https://user@fcm.googleapis.com/fcm/send/eYcfsFcmOpaqueToken1234567890"
+      "endpoint": "https://user@fcm.googleapis.com/wp/eYcfsFcmOpaqueToken1234567890"
     },
     {
       "reason": "non_standard_port",
-      "endpoint": "https://fcm.googleapis.com:444/fcm/send/eYcfsFcmOpaqueToken1234567890"
+      "endpoint": "https://fcm.googleapis.com:444/wp/eYcfsFcmOpaqueToken1234567890"
     },
     {
       "reason": "fragment",
-      "endpoint": "https://fcm.googleapis.com/fcm/send/eYcfsFcmOpaqueToken1234567890#fragment"
+      "endpoint": "https://fcm.googleapis.com/wp/eYcfsFcmOpaqueToken1234567890#fragment"
     },
     {
       "reason": "unknown_fcm_path",
@@ -35,23 +55,27 @@
     },
     {
       "reason": "unknown_fcm_query",
-      "endpoint": "https://fcm.googleapis.com/fcm/send/eYcfsFcmOpaqueToken1234567890?debug=true"
+      "endpoint": "https://fcm.googleapis.com/wp/eYcfsFcmOpaqueToken1234567890?debug=true"
     },
     {
       "reason": "unknown_mozilla_query",
       "endpoint": "https://updates.push.services.mozilla.com/wpush/v2/gAAAAABcfsMozillaOpaqueToken1234567890?key=value"
     },
     {
-      "reason": "windows_missing_token_query",
-      "endpoint": "https://wns2-am3p.notify.windows.com/w/"
+      "reason": "windows_non_https",
+      "endpoint": "http://db3.notify.windows.com/?token=BQYAAABcfsWindowsOpaqueToken1234567890"
     },
     {
-      "reason": "windows_unknown_query",
-      "endpoint": "https://wns2-am3p.notify.windows.com/w/?token=BQYAAABcfsWindowsOpaqueToken1234567890&debug=true"
+      "reason": "windows_userinfo",
+      "endpoint": "https://user@db3.notify.windows.com/?token=BQYAAABcfsWindowsOpaqueToken1234567890"
     },
     {
-      "reason": "bare_windows_domain",
-      "endpoint": "https://notify.windows.com/w/?token=BQYAAABcfsWindowsOpaqueToken1234567890"
+      "reason": "windows_non_standard_port",
+      "endpoint": "https://db3.notify.windows.com:444/?token=BQYAAABcfsWindowsOpaqueToken1234567890"
+    },
+    {
+      "reason": "windows_fragment",
+      "endpoint": "https://db3.notify.windows.com/?token=BQYAAABcfsWindowsOpaqueToken1234567890#fragment"
     },
     {
       "reason": "unknown_provider",

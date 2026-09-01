@@ -17,6 +17,7 @@ import {
     enableCfsWebPush,
     ensureCfsWebPushForGrantedPermission,
     getCfsWebPushStatus,
+    prepareCfsWebPushForAccountReplacement,
 } from "./CfsWebPushManager";
 
 interface EndpointFixture {
@@ -27,8 +28,10 @@ interface EndpointFixture {
 
 const endpointFixtures = endpointFixturesJson as {
     schema: string;
-    tokens: string;
+    fixture_values: string;
+    real_browser_acceptance: boolean;
     safari_status: string;
+    provenance: Record<string, unknown>;
     valid: EndpointFixture[];
     invalid: EndpointFixture[];
 };
@@ -36,17 +39,24 @@ const endpointFixtures = endpointFixturesJson as {
 describe("CFS Web Push", () => {
     let endpoint = "https://fcm.googleapis.com/wp/test-endpoint-opaque-123456";
     let pushKey = "test-p256dh";
-    const unsubscribe = vi.fn().mockResolvedValue(true);
+    let activeSubscription: PushSubscription | null;
+    const unsubscribe = vi.fn(async () => {
+        activeSubscription = null;
+        return true;
+    });
     const subscription = {
         toJSON: () => ({
             endpoint,
             keys: { p256dh: pushKey, auth: "test-auth" },
         }),
         unsubscribe,
-    };
+    } as unknown as PushSubscription;
     const pushManager = {
-        getSubscription: vi.fn().mockResolvedValue(subscription),
-        subscribe: vi.fn().mockResolvedValue(subscription),
+        getSubscription: vi.fn(async () => activeSubscription),
+        subscribe: vi.fn(async () => {
+            activeSubscription = subscription;
+            return subscription;
+        }),
     };
     const registration = {
         pushManager,
@@ -96,10 +106,25 @@ describe("CFS Web Push", () => {
         return values;
     }
 
+    async function readActiveOwnerMarker(): Promise<Record<string, unknown> | undefined> {
+        const response = cacheEntries.get(new URL("/cfs-push/active-owner.json", window.location.origin).href);
+        return response ? ((await response.clone().json()) as Record<string, unknown>) : undefined;
+    }
+
     beforeEach(() => {
         vi.clearAllMocks();
         endpoint = "https://fcm.googleapis.com/wp/test-endpoint-opaque-123456";
         pushKey = "test-p256dh";
+        activeSubscription = subscription;
+        unsubscribe.mockReset().mockImplementation(async () => {
+            activeSubscription = null;
+            return true;
+        });
+        pushManager.getSubscription.mockReset().mockImplementation(async () => activeSubscription);
+        pushManager.subscribe.mockReset().mockImplementation(async () => {
+            activeSubscription = subscription;
+            return subscription;
+        });
         localStorage.clear();
         cacheEntries.clear();
         SdkConfig.put({
@@ -159,6 +184,54 @@ describe("CFS Web Push", () => {
             ownerFingerprint: expect.stringMatching(/^[A-Za-z0-9_-]{22}$/),
         });
         expect(requestPermission).not.toHaveBeenCalled();
+        await expect(readActiveOwnerMarker()).resolves.toMatchObject({
+            cfs_schema: 1,
+            ownerFingerprint: expect.stringMatching(/^[A-Za-z0-9_-]{22}$/),
+        });
+    });
+
+    it("writes the active owner marker only after setPusher succeeds", async () => {
+        let resolveSetPusher!: () => void;
+        const setPusher = vi.fn(
+            () =>
+                new Promise<void>((resolve) => {
+                    resolveSetPusher = resolve;
+                }),
+        );
+        const pending = enableCfsWebPush(makeClient({ setPusher }), true);
+        await vi.waitFor(() => expect(setPusher).toHaveBeenCalledTimes(1));
+
+        await expect(readActiveOwnerMarker()).resolves.toBeUndefined();
+        expect(localStorage.getItem("cfs_webpush_enrollment_v1")).toBeNull();
+
+        resolveSetPusher();
+        await pending;
+        await expect(readActiveOwnerMarker()).resolves.toMatchObject({ cfs_schema: 1 });
+        expect(localStorage.getItem("cfs_webpush_enrollment_v1")).toContain('"state":"enabled"');
+    });
+
+    it("clears the active owner marker before Disable network cleanup", async () => {
+        const client = makeClient();
+        await enableCfsWebPush(client, true);
+        unsubscribe.mockClear();
+        let resolveUnsubscribe!: () => void;
+        unsubscribe.mockImplementationOnce(
+            () =>
+                new Promise<boolean>((resolve) => {
+                    resolveUnsubscribe = () => {
+                        activeSubscription = null;
+                        resolve(true);
+                    };
+                }),
+        );
+
+        const pending = disableCfsWebPush(client);
+        await vi.waitFor(() => expect(unsubscribe).toHaveBeenCalled());
+        await expect(readActiveOwnerMarker()).resolves.toBeUndefined();
+        expect(localStorage.getItem("cfs_webpush_enrollment_v1")).toContain('"state":"disabled"');
+
+        resolveUnsubscribe();
+        await pending;
     });
 
     it("does not mark enrollment enabled when setPusher fails", async () => {
@@ -171,6 +244,7 @@ describe("CFS Web Push", () => {
         expect(unsubscribe).toHaveBeenCalledTimes(1);
         expect(localStorage.getItem("cfs_webpush_registration_v1")).toBeNull();
         expect(localStorage.getItem("cfs_webpush_enrollment_v1")).toBeNull();
+        await expect(readActiveOwnerMarker()).resolves.toBeUndefined();
         expect((await readTombstones()).length).toBe(1);
     });
 
@@ -198,6 +272,7 @@ describe("CFS Web Push", () => {
         const setPusher = vi.fn().mockResolvedValue(undefined);
         const client = makeClient({ setPusher });
         await enableCfsWebPush(client, true);
+        unsubscribe.mockClear();
         await disableCfsWebPush(client);
 
         await ensureCfsWebPushForGrantedPermission(client);
@@ -234,6 +309,27 @@ describe("CFS Web Push", () => {
         expect(localStorage.getItem("cfs_webpush_registration_v1")).toBeNull();
     });
 
+    it("OverwriteLogin A to B clears owner state without blocking mandatory account replacement", async () => {
+        const accountA = makeClient({ removePusher: vi.fn().mockRejectedValue(new Error("remove failed")) });
+        await enableCfsWebPush(accountA, true);
+        unsubscribe.mockRejectedValue(new Error("unsubscribe failed"));
+
+        await expect(prepareCfsWebPushForAccountReplacement(accountA)).resolves.toBeUndefined();
+
+        expect(localStorage.getItem("cfs_webpush_enrollment_v1")).toBeNull();
+        expect(localStorage.getItem("cfs_webpush_registration_v1")).toBeNull();
+        await expect(readActiveOwnerMarker()).resolves.toBeUndefined();
+        const setPusherB = vi.fn().mockResolvedValue(undefined);
+        await ensureCfsWebPushForGrantedPermission(
+            makeClient({
+                userId: "@account-b:chat.collectorfigures.com",
+                deviceId: "DEVICE-B",
+                setPusher: setPusherB,
+            }),
+        );
+        expect(setPusherB).not.toHaveBeenCalled();
+    });
+
     it("logout always clears enrollment even when browser unsubscribe fails", async () => {
         await enableCfsWebPush(makeClient(), true);
         unsubscribe.mockRejectedValueOnce(new Error("unsubscribe failed"));
@@ -242,6 +338,7 @@ describe("CFS Web Push", () => {
 
         expect(localStorage.getItem("cfs_webpush_enrollment_v1")).toBeNull();
         expect(localStorage.getItem("cfs_webpush_registration_v1")).toBeNull();
+        await expect(readActiveOwnerMarker()).resolves.toBeUndefined();
         expect(await readTombstones()).toEqual([
             expect.objectContaining({
                 browserUnsubscribePending: true,
@@ -260,7 +357,7 @@ describe("CFS Web Push", () => {
         expect(removePusher).toHaveBeenCalledExactlyOnceWith("test-p256dh", "com.collectorfigures.chat.web");
     });
 
-    it("missing device ID and missing exact stored target fail closed without deleting pushers", async () => {
+    it("missing metadata still removes the browser subscription without enumerating or deleting pushers", async () => {
         const removePusher = vi.fn().mockResolvedValue(undefined);
         const getPushers = vi.fn().mockResolvedValue({
             pushers: [{ app_id: "com.collectorfigures.chat.web", pushkey: "unrelated" }],
@@ -270,11 +367,68 @@ describe("CFS Web Push", () => {
             getPushers,
         } as unknown as MatrixClient;
 
-        await expect(disableCfsWebPush(client)).rejects.toThrow("exact Matrix device ID");
+        await expect(disableCfsWebPush(client)).rejects.toThrow("cleanup was incomplete");
 
         expect(getPushers).not.toHaveBeenCalled();
         expect(removePusher).not.toHaveBeenCalled();
-        expect(unsubscribe).not.toHaveBeenCalled();
+        expect(unsubscribe).toHaveBeenCalledTimes(1);
+        expect(activeSubscription).toBeNull();
+    });
+
+    it("blocks account B enable when account A removal and browser unsubscribe both fail", async () => {
+        const accountA = makeClient({ removePusher: vi.fn().mockRejectedValue(new Error("remove failed")) });
+        await enableCfsWebPush(accountA, true);
+        unsubscribe.mockRejectedValue(new Error("unsubscribe failed"));
+        await expect(disableCfsWebPush(accountA)).rejects.toThrow("cleanup was incomplete");
+
+        const setPusherB = vi.fn().mockResolvedValue(undefined);
+        const accountB = makeClient({
+            userId: "@account-b:chat.collectorfigures.com",
+            deviceId: "DEVICE-B",
+            setPusher: setPusherB,
+        });
+        await expect(enableCfsWebPush(accountB, true)).rejects.toThrow("unsubscribe failed");
+
+        expect(setPusherB).not.toHaveBeenCalled();
+        expect(activeSubscription).toBe(subscription);
+        await expect(readActiveOwnerMarker()).resolves.toBeUndefined();
+    });
+
+    it("blocks setPusher when an unowned browser subscription survives unsubscribe read-back", async () => {
+        unsubscribe.mockResolvedValueOnce(true);
+        const setPusher = vi.fn().mockResolvedValue(undefined);
+
+        await expect(enableCfsWebPush(makeClient({ setPusher }), true)).rejects.toThrow(
+            "still exists after unsubscribe",
+        );
+
+        expect(setPusher).not.toHaveBeenCalled();
+        expect(activeSubscription).toBe(subscription);
+        await expect(readActiveOwnerMarker()).resolves.toBeUndefined();
+    });
+
+    it("concurrent Ensure cannot re-enable after Disable wins the generation guard", async () => {
+        const setPusher = vi.fn().mockResolvedValue(undefined);
+        const removePusher = vi.fn().mockResolvedValue(undefined);
+        const client = makeClient({ setPusher, removePusher });
+        await enableCfsWebPush(client, true);
+        let resolveEnsure!: () => void;
+        setPusher.mockImplementationOnce(
+            () =>
+                new Promise<void>((resolve) => {
+                    resolveEnsure = resolve;
+                }),
+        );
+
+        const pendingEnsure = ensureCfsWebPushForGrantedPermission(client);
+        await vi.waitFor(() => expect(setPusher).toHaveBeenCalledTimes(2));
+        await disableCfsWebPush(client);
+        resolveEnsure();
+
+        await expect(pendingEnsure).rejects.toThrow("superseded or could not persist owner state");
+        expect(localStorage.getItem("cfs_webpush_enrollment_v1")).toContain('"state":"disabled"');
+        expect(localStorage.getItem("cfs_webpush_registration_v1")).toBeNull();
+        await expect(readActiveOwnerMarker()).resolves.toBeUndefined();
     });
 
     it("account B cannot process or complete account A cleanup tombstone", async () => {
@@ -312,7 +466,8 @@ describe("CFS Web Push", () => {
         await disableCfsWebPush(client);
 
         expect(removePusher).toHaveBeenCalledExactlyOnceWith("test-p256dh", "com.collectorfigures.chat.web");
-        expect(unsubscribe).toHaveBeenCalledTimes(1);
+        expect(unsubscribe).toHaveBeenCalled();
+        expect(activeSubscription).toBeNull();
         expect(localStorage.getItem("cfs_webpush_registration_v1")).toBeNull();
     });
 
@@ -354,17 +509,27 @@ describe("CFS Web Push", () => {
 
         await expect(enableCfsWebPush(makeClient(), true)).rejects.toThrow("disallowed Web Push endpoint");
 
-        expect(unsubscribe).toHaveBeenCalledTimes(1);
+        expect(unsubscribe).toHaveBeenCalledTimes(2);
+        expect(activeSubscription).toBeNull();
     });
 
     it("uses the shared provider-aware endpoint fixture contract", () => {
         expect(endpointFixtures).toMatchObject({
-            schema: "cfs-webpush-endpoint-fixtures/v1",
-            tokens: "synthetic",
+            schema: "cfs-webpush-endpoint-fixtures/v2",
+            fixture_values: "synthetic_redactions",
+            real_browser_acceptance: false,
             safari_status: "fail_closed_pending_real_acceptance",
         });
         expect(endpointFixtures.valid).toHaveLength(3);
-        expect(endpointFixtures.invalid).toHaveLength(11);
+        expect(endpointFixtures.invalid).toHaveLength(12);
+        expect(endpointFixtures.provenance).toHaveProperty("chrome");
+        expect(endpointFixtures.provenance).toHaveProperty("edge");
+        expect(endpointFixtures.provenance).toHaveProperty("firefox");
+    });
+
+    it("rejects an overlong provider endpoint", async () => {
+        endpoint = `https://db3.notify.windows.com/${"x".repeat(2048)}`;
+        await expect(enableCfsWebPush(makeClient(), true)).rejects.toThrow("disallowed Web Push endpoint");
     });
 
     it.each([
