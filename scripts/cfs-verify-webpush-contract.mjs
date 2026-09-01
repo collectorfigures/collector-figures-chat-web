@@ -9,21 +9,36 @@ import { readFile } from "node:fs/promises";
 
 const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 
-const [manifestText, configText, manager, pushWorker, pushPayload, shellWorker, lifecycle, indexPage, helpPage] =
+const [
+    manifestText,
+    configText,
+    endpointFixturesText,
+    manager,
+    pushWorker,
+    pushPayload,
+    shellWorker,
+    lifecycle,
+    webPlatform,
+    indexPage,
+    helpPage,
+] =
     await Promise.all([
         read("apps/web/res/manifest.json"),
         read("apps/web/config.cfs.production.json"),
+        read("apps/web/src/cfs-webpush/fixtures/cfs-webpush-endpoints.json"),
         read("apps/web/src/cfs-webpush/CfsWebPushManager.ts"),
         read("apps/web/src/cfs-webpush/serviceworker.ts"),
         read("apps/web/src/cfs-webpush/payload.ts"),
         read("apps/web/src/serviceworker/index.ts"),
         read("apps/web/src/Lifecycle.ts"),
+        read("apps/web/src/vector/platform/WebPlatform.ts"),
         read("apps/web/src/vector/index.html"),
         read("apps/web/res/cfs-help/index.html"),
     ]);
 
 const manifest = JSON.parse(manifestText);
 const config = JSON.parse(configText);
+const endpointFixtures = JSON.parse(endpointFixturesText);
 
 assert.equal(manifest.name, "Collector Figures Chat");
 assert.equal(manifest.short_name, "CFS Chat");
@@ -56,6 +71,21 @@ assert.match(manager, /retryCfsWebPushCleanup/);
 assert.match(manager, /Previous CFS Web Push cleanup is still pending/);
 assert.match(manager, /Matrix pusher registration failed and was queued for cleanup/);
 assert.match(manager, /validateSubscriptionEndpoint/);
+assert.match(manager, /ENROLLMENT_KEY/);
+assert.match(manager, /state: "enabled"/);
+assert.match(manager, /state: "disabled"/);
+assert.match(manager, /ownerFingerprint/);
+assert.doesNotMatch(manager, /getPushers\(/);
+assert.equal(endpointFixtures.schema, "cfs-webpush-endpoint-fixtures/v1");
+assert.equal(endpointFixtures.tokens, "synthetic");
+assert.equal(endpointFixtures.safari_status, "fail_closed_pending_real_acceptance");
+assert.equal(endpointFixtures.valid.length, 3);
+assert.equal(endpointFixtures.invalid.length, 11);
+assert.match(webPlatform, /isCfsWebPushEnrollmentEnabledForClient/);
+assert.ok(
+    webPlatform.indexOf("isCfsWebPushEnrollmentEnabledForClient") <
+        webPlatform.indexOf("ensureCfsWebPushForGrantedPermission(client)"),
+);
 
 assert.match(pushWorker, /Collector Figures/);
 assert.match(pushWorker, /You have a new message/);

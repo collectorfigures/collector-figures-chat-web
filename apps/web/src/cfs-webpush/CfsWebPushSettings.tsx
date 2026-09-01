@@ -17,7 +17,7 @@ export function CfsWebPushSettings(): JSX.Element | null {
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string>();
 
-    const refresh = useCallback(async () => setStatus(await getCfsWebPushStatus()), []);
+    const refresh = useCallback(async () => setStatus(await getCfsWebPushStatus(client)), [client]);
     useEffect(() => {
         void refresh();
     }, [refresh]);

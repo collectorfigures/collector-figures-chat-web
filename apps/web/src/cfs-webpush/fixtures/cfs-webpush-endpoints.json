@@ -1,0 +1,65 @@
+{
+  "schema": "cfs-webpush-endpoint-fixtures/v1",
+  "tokens": "synthetic",
+  "safari_status": "fail_closed_pending_real_acceptance",
+  "valid": [
+    {
+      "provider": "mozilla",
+      "endpoint": "https://updates.push.services.mozilla.com/wpush/v2/gAAAAABcfsMozillaOpaqueToken1234567890"
+    },
+    {
+      "provider": "fcm",
+      "endpoint": "https://fcm.googleapis.com/fcm/send/eYcfsFcmOpaqueToken1234567890"
+    },
+    {
+      "provider": "windows",
+      "endpoint": "https://wns2-am3p.notify.windows.com/w/?token=BQYAAABcfsWindowsOpaqueToken1234567890"
+    }
+  ],
+  "invalid": [
+    {
+      "reason": "userinfo",
+      "endpoint": "https://user@fcm.googleapis.com/fcm/send/eYcfsFcmOpaqueToken1234567890"
+    },
+    {
+      "reason": "non_standard_port",
+      "endpoint": "https://fcm.googleapis.com:444/fcm/send/eYcfsFcmOpaqueToken1234567890"
+    },
+    {
+      "reason": "fragment",
+      "endpoint": "https://fcm.googleapis.com/fcm/send/eYcfsFcmOpaqueToken1234567890#fragment"
+    },
+    {
+      "reason": "unknown_fcm_path",
+      "endpoint": "https://fcm.googleapis.com/unexpected/eYcfsFcmOpaqueToken1234567890"
+    },
+    {
+      "reason": "unknown_fcm_query",
+      "endpoint": "https://fcm.googleapis.com/fcm/send/eYcfsFcmOpaqueToken1234567890?debug=true"
+    },
+    {
+      "reason": "unknown_mozilla_query",
+      "endpoint": "https://updates.push.services.mozilla.com/wpush/v2/gAAAAABcfsMozillaOpaqueToken1234567890?key=value"
+    },
+    {
+      "reason": "windows_missing_token_query",
+      "endpoint": "https://wns2-am3p.notify.windows.com/w/"
+    },
+    {
+      "reason": "windows_unknown_query",
+      "endpoint": "https://wns2-am3p.notify.windows.com/w/?token=BQYAAABcfsWindowsOpaqueToken1234567890&debug=true"
+    },
+    {
+      "reason": "bare_windows_domain",
+      "endpoint": "https://notify.windows.com/w/?token=BQYAAABcfsWindowsOpaqueToken1234567890"
+    },
+    {
+      "reason": "unknown_provider",
+      "endpoint": "https://push.example.invalid/wpush/v2/opaqueToken1234567890"
+    },
+    {
+      "reason": "safari_pending_real_acceptance",
+      "endpoint": "https://web.push.apple.com/QP1cfsSafariOpaqueToken1234567890"
+    }
+  ]
+}

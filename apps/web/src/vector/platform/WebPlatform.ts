@@ -22,7 +22,10 @@ import GenericToast from "../../components/views/toasts/GenericToast.tsx";
 import SdkConfig from "../../SdkConfig.ts";
 import type { ActionPayload } from "../../dispatcher/payloads.ts";
 import * as SessionLock from "../../utils/SessionLock.ts";
-import { ensureCfsWebPushForGrantedPermission } from "../../cfs-webpush/CfsWebPushManager.ts";
+import {
+    ensureCfsWebPushForGrantedPermission,
+    isCfsWebPushEnrollmentEnabledForClient,
+} from "../../cfs-webpush/CfsWebPushManager.ts";
 
 const POKE_RATE_MS = 10 * 60 * 1000; // 10 min
 
@@ -57,9 +60,11 @@ export default class WebPlatform extends BasePlatform {
             case Action.ClientStarted:
                 // Defer drawing the toast until the client is started as the lifecycle methods reset the ToastStore right before
                 this.registerServiceWorkerPromise.catch(this.handleServiceWorkerRegistrationError);
-                void ensureCfsWebPushForGrantedPermission(MatrixClientPeg.safeGet()).catch((error) => {
-                    logger.warn("Unable to refresh the CFS Web Push registration", error);
-                });
+                void (async (): Promise<void> => {
+                    const client = MatrixClientPeg.safeGet();
+                    if (!(await isCfsWebPushEnrollmentEnabledForClient(client))) return;
+                    await ensureCfsWebPushForGrantedPermission(client);
+                })().catch((error) => logger.warn("Unable to refresh the CFS Web Push registration", error));
                 break;
         }
     }
