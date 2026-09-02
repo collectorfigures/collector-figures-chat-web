@@ -1,0 +1,114 @@
+{
+  "schema": "cfs-webpush-endpoint-fixtures/v2",
+  "fixture_values": "synthetic_redactions",
+  "real_browser_acceptance": false,
+  "safari_status": "fail_closed_pending_real_acceptance",
+  "provenance": {
+    "chrome": {
+      "provider": "fcm",
+      "redacted_shape": "https://fcm.googleapis.com/wp/<opaque>",
+      "opaque_capability_retained": false
+    },
+    "firefox": {
+      "provider": "mozilla_autopush",
+      "redacted_shape": "https://updates.push.services.mozilla.com/wpush/v2/<opaque>",
+      "opaque_capability_retained": false
+    },
+    "edge": {
+      "provider": "windows_wns",
+      "redacted_shape": "https://<variable-subdomain>.notify.windows.com/<black-box>",
+      "opaque_capability_retained": false,
+      "validation_boundary": "https_host_suffix_only_black_box_path_query",
+      "source": "https://learn.microsoft.com/en-us/windows/apps/develop/notifications/push-notifications/wns-overview"
+    }
+  },
+  "valid": [
+    {
+      "case": "mozilla-wpush-v2",
+      "provider": "mozilla",
+      "endpoint": "https://updates.push.services.mozilla.com/wpush/v2/gAAAAABcfsMozillaOpaqueToken1234567890"
+    },
+    {
+      "case": "fcm-wp-current",
+      "provider": "fcm",
+      "endpoint": "https://fcm.googleapis.com/wp/eYcfsFcmOpaqueToken1234567890"
+    },
+    {
+      "case": "windows-query-only",
+      "provider": "windows",
+      "endpoint": "https://db3.notify.windows.com/?token=BQYAAABcfsWindowsOpaqueToken1234567890"
+    },
+    {
+      "case": "windows-empty-path",
+      "provider": "windows",
+      "endpoint": "https://db3.notify.windows.com"
+    },
+    {
+      "case": "windows-explicit-443",
+      "provider": "windows",
+      "endpoint": "https://db3.notify.windows.com:443/?token=BQYAAABcfsWindowsOpaqueToken1234567890"
+    }
+  ],
+  "invalid": [
+    {
+      "case": "reject-userinfo",
+      "reason": "userinfo",
+      "endpoint": "https://user@fcm.googleapis.com/wp/eYcfsFcmOpaqueToken1234567890"
+    },
+    {
+      "case": "reject-non-standard-port",
+      "reason": "non_standard_port",
+      "endpoint": "https://fcm.googleapis.com:444/wp/eYcfsFcmOpaqueToken1234567890"
+    },
+    {
+      "case": "reject-fragment",
+      "reason": "fragment",
+      "endpoint": "https://fcm.googleapis.com/wp/eYcfsFcmOpaqueToken1234567890#fragment"
+    },
+    {
+      "case": "reject-unknown-fcm-path",
+      "reason": "unknown_fcm_path",
+      "endpoint": "https://fcm.googleapis.com/unexpected/eYcfsFcmOpaqueToken1234567890"
+    },
+    {
+      "case": "reject-unknown-fcm-query",
+      "reason": "unknown_fcm_query",
+      "endpoint": "https://fcm.googleapis.com/wp/eYcfsFcmOpaqueToken1234567890?debug=true"
+    },
+    {
+      "case": "reject-unknown-mozilla-query",
+      "reason": "unknown_mozilla_query",
+      "endpoint": "https://updates.push.services.mozilla.com/wpush/v2/gAAAAABcfsMozillaOpaqueToken1234567890?key=value"
+    },
+    {
+      "case": "reject-windows-non-https",
+      "reason": "windows_non_https",
+      "endpoint": "http://db3.notify.windows.com/?token=BQYAAABcfsWindowsOpaqueToken1234567890"
+    },
+    {
+      "case": "reject-windows-userinfo",
+      "reason": "windows_userinfo",
+      "endpoint": "https://user@db3.notify.windows.com/?token=BQYAAABcfsWindowsOpaqueToken1234567890"
+    },
+    {
+      "case": "reject-windows-non-standard-port",
+      "reason": "windows_non_standard_port",
+      "endpoint": "https://db3.notify.windows.com:444/?token=BQYAAABcfsWindowsOpaqueToken1234567890"
+    },
+    {
+      "case": "reject-windows-fragment",
+      "reason": "windows_fragment",
+      "endpoint": "https://db3.notify.windows.com/?token=BQYAAABcfsWindowsOpaqueToken1234567890#fragment"
+    },
+    {
+      "case": "reject-unknown-provider",
+      "reason": "unknown_provider",
+      "endpoint": "https://push.example.invalid/wpush/v2/opaqueToken1234567890"
+    },
+    {
+      "case": "reject-safari-pending-acceptance",
+      "reason": "safari_pending_real_acceptance",
+      "endpoint": "https://web.push.apple.com/QP1cfsSafariOpaqueToken1234567890"
+    }
+  ]
+}

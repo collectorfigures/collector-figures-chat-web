@@ -22,7 +22,10 @@ import GenericToast from "../../components/views/toasts/GenericToast.tsx";
 import SdkConfig from "../../SdkConfig.ts";
 import type { ActionPayload } from "../../dispatcher/payloads.ts";
 import * as SessionLock from "../../utils/SessionLock.ts";
-import { ensureCfsWebPushForGrantedPermission } from "../../cfs-webpush/CfsWebPushManager.ts";
+import {
+    ensureCfsWebPushForGrantedPermission,
+    isCfsWebPushEnrollmentEnabledForClient,
+} from "../../cfs-webpush/CfsWebPushManager.ts";
 
 const POKE_RATE_MS = 10 * 60 * 1000; // 10 min
 
@@ -57,9 +60,11 @@ export default class WebPlatform extends BasePlatform {
             case Action.ClientStarted:
                 // Defer drawing the toast until the client is started as the lifecycle methods reset the ToastStore right before
                 this.registerServiceWorkerPromise.catch(this.handleServiceWorkerRegistrationError);
-                void ensureCfsWebPushForGrantedPermission(MatrixClientPeg.safeGet()).catch((error) => {
-                    logger.warn("Unable to refresh the CFS Web Push registration", error);
-                });
+                void (async (): Promise<void> => {
+                    const client = MatrixClientPeg.safeGet();
+                    if (!(await isCfsWebPushEnrollmentEnabledForClient(client))) return;
+                    await ensureCfsWebPushForGrantedPermission(client);
+                })().catch((error) => logger.warn("Unable to refresh the CFS Web Push registration", error));
                 break;
         }
     }
@@ -71,7 +76,6 @@ export default class WebPlatform extends BasePlatform {
             throw new Error("Service worker registration failed");
         }
 
-        navigator.serviceWorker.addEventListener("message", this.onServiceWorkerPostMessage);
         await registration.update();
     }
 
@@ -91,24 +95,6 @@ export default class WebPlatform extends BasePlatform {
             component: GenericToast,
             priority: 95,
         });
-    };
-
-    private onServiceWorkerPostMessage = (event: MessageEvent): void => {
-        try {
-            if (event.data?.["type"] === "userinfo" && event.data?.["responseKey"]) {
-                const userId = localStorage.getItem("mx_user_id");
-                const deviceId = localStorage.getItem("mx_device_id");
-                const homeserver = MatrixClientPeg.get()?.getHomeserverUrl();
-                event.source!.postMessage({
-                    responseKey: event.data["responseKey"],
-                    userId,
-                    deviceId,
-                    homeserver,
-                });
-            }
-        } catch (e) {
-            console.error("Error responding to service worker: ", e);
-        }
     };
 
     public getHumanReadableName(): string {

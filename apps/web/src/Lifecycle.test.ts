@@ -895,6 +895,18 @@ describe("Lifecycle", () => {
             expect(OAuth2.prototype.revokeToken).toHaveBeenCalledWith(accessToken, "access_token");
             expect(OAuth2.prototype.revokeToken).toHaveBeenCalledWith(refreshToken, "refresh_token");
         });
+
+        it("clears local account state even when OAuth token revocation fails", async () => {
+            localStorage.setItem("mx_oidc_client_id", "test-client-id");
+            localStorage.setItem("cfs-sensitive-session-state", "must-be-cleared");
+            vi.mocked(OAuth2.prototype.revokeToken).mockRejectedValue(new Error("oauth unavailable"));
+
+            await logout();
+            await flushPromises();
+            await flushPromises();
+
+            expect(localStorage.getItem("cfs-sensitive-session-state")).toBeNull();
+        });
     });
 
     describe("overwritelogin", () => {

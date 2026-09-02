@@ -4,13 +4,8 @@ Copyright 2026 Collector Figures
 SPDX-License-Identifier: AGPL-3.0-only
 */
 
-import { cfsPushTargetPath, safeCfsPushPayload, type CfsPushPayload } from "./payload";
-
-interface CfsNotificationData {
-    cfsSchema: 1;
-    accountFingerprint?: string;
-    targetPath: string;
-}
+import { CFS_OWNER_FINGERPRINT_PATTERN } from "./payload";
+import { cfsNotificationClickTarget, showCfsNotificationForActiveOwner } from "./notificationGate";
 
 interface CfsWorkerClient {
     url: string;
@@ -54,45 +49,56 @@ interface CfsWorkerScope {
 }
 
 const worker = globalThis as unknown as CfsWorkerScope;
-const DEFAULT_TARGET = "/";
-const DEFAULT_TITLE = "Collector Figures";
-const DEFAULT_BODY = "You have a new message";
+const STATE_CACHE = "cfs-webpush-cleanup-v1";
+const SUBSCRIPTION_CHANGE_PATH = "/cfs-push/subscription-change";
+const ACTIVE_OWNER_PATH = "/cfs-push/active-owner.json";
+
+async function readActiveOwner(): Promise<string | undefined> {
+    try {
+        const cache = await caches.open(STATE_CACHE);
+        const response = await cache.match(new URL(ACTIVE_OWNER_PATH, worker.location.origin).href);
+        if (!response) return undefined;
+        const marker = (await response.json()) as Record<string, unknown>;
+        return marker.cfs_schema === 1 &&
+            typeof marker.ownerFingerprint === "string" &&
+            CFS_OWNER_FINGERPRINT_PATTERN.test(marker.ownerFingerprint) &&
+            typeof marker.operationId === "string" &&
+            /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(marker.operationId)
+            ? marker.ownerFingerprint
+            : undefined;
+    } catch {
+        return undefined;
+    }
+}
 
 worker.addEventListener("install", (event) => event.waitUntil(worker.skipWaiting()));
 worker.addEventListener("activate", (event) => event.waitUntil(worker.clients.claim()));
 
 worker.addEventListener("push", (event) => {
-    let payload: CfsPushPayload = {};
-    try {
-        payload = safeCfsPushPayload(event.data?.json());
-    } catch {
-        payload = {};
-    }
-
-    const data: CfsNotificationData = {
-        cfsSchema: 1,
-        accountFingerprint: payload.cfs_account_fingerprint,
-        targetPath: cfsPushTargetPath(payload),
-    };
     event.waitUntil(
-        worker.registration.showNotification(DEFAULT_TITLE, {
-            body: DEFAULT_BODY,
-            icon: "/cfs-icons/icon-1080.jpg",
-            badge: "/cfs-icons/icon-1080.jpg",
-            tag: "cfs-new-message",
-            data,
-        }),
+        (async () => {
+            let payload: unknown;
+            try {
+                payload = event.data?.json();
+            } catch {
+                return;
+            }
+            const activeOwner = await readActiveOwner();
+            await showCfsNotificationForActiveOwner(payload, activeOwner, (title, options) =>
+                worker.registration.showNotification(title, options),
+            );
+        })(),
     );
 });
 
 worker.addEventListener("notificationclick", (event) => {
     event.notification.close();
-    const data = event.notification.data as Partial<CfsNotificationData> | undefined;
-    const path = data?.cfsSchema === 1 && typeof data.targetPath === "string" ? data.targetPath : DEFAULT_TARGET;
-    const target = new URL(path, worker.location.origin).href;
 
     event.waitUntil(
         (async () => {
+            const activeOwner = await readActiveOwner();
+            const target = cfsNotificationClickTarget(event.notification.data, activeOwner, worker.location.origin);
+            if (!target) return;
             const windows = await worker.clients.matchAll({ type: "window", includeUncontrolled: true });
             const existing = windows.find((client) => new URL(client.url).origin === worker.location.origin) as
                 | CfsWindowClient
@@ -110,6 +116,11 @@ worker.addEventListener("notificationclick", (event) => {
 worker.addEventListener("pushsubscriptionchange", (event) => {
     event.waitUntil(
         (async () => {
+            const cache = await caches.open(STATE_CACHE);
+            await cache.put(
+                new URL(SUBSCRIPTION_CHANGE_PATH, worker.location.origin).href,
+                new Response("1", { headers: { "Cache-Control": "no-store" } }),
+            );
             const windows = await worker.clients.matchAll({ type: "window", includeUncontrolled: true });
             for (const client of windows) client.postMessage({ type: "cfs-webpush-subscription-changed" });
         })(),
