@@ -45,7 +45,7 @@ bash "$script_dir/cfs-promote-oci-tag.sh" \
     "$repository" "$formal_tag" "$candidate_a_digest" \
     "$work_dir/formal-first.json" "$work_dir/formal-first-metadata.json"
 first_formal_digest="sha256:$(sha256sum "$work_dir/formal-first.json" | cut -d' ' -f1)"
-first_metadata_digest="$(jq -er '.containerimage.descriptor.digest' "$work_dir/formal-first-metadata.json")"
+first_metadata_digest="$(jq -er '."containerimage.descriptor".digest' "$work_dir/formal-first-metadata.json")"
 test "$candidate_a_digest" = "$first_formal_digest"
 test "$candidate_a_digest" = "$first_metadata_digest"
 

@@ -32,9 +32,9 @@ if docker buildx imagetools inspect --raw "$image:$tag" > "$existing_manifest" 2
         exit 42
     fi
     jq -n --arg digest "$existing_digest" \
-        '{containerimage: {descriptor: {digest: $digest}}, cfs: {idempotent: true}}' \
+        '{"containerimage.descriptor": {digest: $digest}, cfs: {idempotent: true}}' \
         > "$metadata_file"
-    metadata_digest="$(jq -er '.containerimage.descriptor.digest' "$metadata_file")"
+    metadata_digest="$(jq -er '."containerimage.descriptor".digest' "$metadata_file")"
 else
     rm -f "$existing_manifest"
     docker buildx imagetools create \
@@ -42,7 +42,7 @@ else
         --metadata-file "$metadata_file" \
         --tag "$image:$tag" \
         "$image@$candidate_digest"
-    metadata_digest="$(jq -er '.containerimage.descriptor.digest' "$metadata_file")"
+    metadata_digest="$(jq -er '."containerimage.descriptor".digest' "$metadata_file")"
     test "$metadata_digest" = "$candidate_digest"
     created=true
 fi

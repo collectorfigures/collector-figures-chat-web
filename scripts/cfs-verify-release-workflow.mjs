@@ -71,7 +71,7 @@ assert.match(workflow, /bash scripts\/cfs-promote-oci-tag\.sh/);
 assert.doesNotMatch(workflow, /docker buildx imagetools create/);
 assert.match(promotionScript, /docker buildx imagetools create \\\n\s*--prefer-index=false \\\n\s*--metadata-file/);
 assert.doesNotMatch(promotionScript, /imagetools create\s+--tag/);
-assert.match(promotionScript, /containerimage\.descriptor\.digest/);
+assert.match(promotionScript, /\."containerimage\.descriptor"\.digest/);
 assert.match(promotionScript, /test "\$metadata_digest" = "\$candidate_digest"/);
 assert.match(promotionScript, /test "\$raw_manifest_digest" = "\$candidate_digest"/);
 assert.match(promotionScript, /refusing to overwrite/);
