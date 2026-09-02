@@ -24,7 +24,8 @@ RUN --mount=type=bind,source=.git,target=/src/.git /src/scripts/docker-link-repo
 
 # Build
 COPY --link --exclude=.git --exclude=apps/web/docker . /src
-RUN --mount=type=bind,source=.git,target=/src/.git /src/scripts/docker-package.sh
+ARG CFS_DOCKER_DIST_VERSION=""
+RUN --mount=type=bind,source=.git,target=/src/.git CFS_DOCKER_DIST_VERSION="${CFS_DOCKER_DIST_VERSION}" /src/scripts/docker-package.sh
 
 # Copy the config now so that we don't create another layer in the app image
 RUN cp /src/apps/web/config.cfs.production.json /src/apps/web/webapp/config.json
