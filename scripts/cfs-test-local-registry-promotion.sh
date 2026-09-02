@@ -15,7 +15,7 @@ local_image="$1"
 registry_image="docker.io/library/registry:2@sha256:46faa9a1ae6813194b53921a370f2f4f8c5e1aae228a89bceafef5847a6a3278"
 run_suffix="${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-0}"
 container_name="cfs-oci-r2-registry-$run_suffix"
-repository_prefix="localhost:5000/cfs-oci-r2-$run_suffix"
+repository_prefix="127.0.0.1:5000/cfs-oci-r2-$run_suffix"
 version_tag="cfs-test-v1"
 sha_tag="sha-test-source"
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
@@ -60,7 +60,7 @@ tag_exists() {
     repository="$1"
     tag="$2"
     result_file="$work_dir/tags-$(printf '%s-%s' "$repository" "$tag" | tr '/:' '__').json"
-    code="$(curl --silent --show-error --output "$result_file" --write-out '%{http_code}'         "http://127.0.0.1:5000/v2/${repository#localhost:5000/}/tags/list")"
+    code="$(curl --silent --show-error --output "$result_file" --write-out '%{http_code}'         "http://127.0.0.1:5000/v2/${repository#127.0.0.1:5000/}/tags/list")"
     case "$code" in
         200)
             jq -e --arg tag "$tag" '.tags != null and (.tags | index($tag)) != null' \

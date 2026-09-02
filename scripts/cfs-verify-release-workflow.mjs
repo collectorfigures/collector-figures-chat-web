@@ -108,6 +108,8 @@ assert.match(promotionScript, /CFS_OCI_FAIL_BEFORE_VERSION_WRITE/);
 assert.match(promotionScript, /partial_version_tag:\s*false/);
 assert.match(integrationScript, /registry:2@sha256:46faa9a1ae6813194b53921a370f2f4f8c5e1aae228a89bceafef5847a6a3278/);
 assert.match(integrationScript, /127\.0\.0\.1:5000:5000/);
+assert.match(integrationScript, /repository_prefix="127\.0\.0\.1:5000\//);
+assert.doesNotMatch(integrationScript, /repository_prefix="localhost:5000\//);
 assert.match(integrationScript, /# A: both formal tags are absent/);
 assert.match(integrationScript, /# B: both formal tags already exist/);
 assert.match(integrationScript, /# C: SHA exists at a different digest/);
