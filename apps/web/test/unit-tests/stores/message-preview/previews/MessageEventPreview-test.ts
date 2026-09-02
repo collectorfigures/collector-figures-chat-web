@@ -72,5 +72,29 @@ describe("MessageEventPreview", () => {
             });
             expect(preview.getTextFor(event)).toBe(`${userId}: test new content body`);
         });
+
+        it("does not expose dangerous SVG animation URLs through formatted reply previews", () => {
+            const event = mkEvent({
+                event: true,
+                content: {
+                    "body": "> quoted\n\nClick me",
+                    "msgtype": "m.text",
+                    "format": "org.matrix.custom.html",
+                    "formatted_body":
+                        '<mx-reply>quoted</mx-reply><svg><a><animate attributeName="href" values="#safe;javascript:alert(1)"></animate><text>Click me</text></a></svg>',
+                    "m.relates_to": {
+                        "m.in_reply_to": {
+                            event_id: "$event",
+                        },
+                    },
+                },
+                user: userId,
+                type: "m.room.message",
+            });
+
+            const text = preview.getTextFor(event);
+            expect(text).toContain("Click me");
+            expect(text).not.toMatch(/javascript:/i);
+        });
     });
 });

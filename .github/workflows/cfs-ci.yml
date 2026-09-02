@@ -43,6 +43,14 @@ jobs:
                   src/hooks/useNotificationSettings.test.ts
                   src/utils/Feedback.test.ts
                   src/vector/rageshakesetup.test.ts
+            - name: Run sanitize-html reply and display regressions
+              run: >-
+                  pnpm --dir apps/web exec jest
+                  --runTestsByPath
+                  test/unit-tests/utils/Reply-test.ts
+                  test/unit-tests/HtmlUtils-test.tsx
+                  test/unit-tests/stores/message-preview/previews/MessageEventPreview-test.ts
+                  --runInBand
             - name: Lint CFS source
               run: >-
                   pnpm exec oxlint
