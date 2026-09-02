@@ -110,7 +110,7 @@ inspect_tag() {
             INSPECT_DIGEST="$digest"
         fi
     elif grep -Eiq \
-        '(^|[^[:alnum:]_])MANIFEST_UNKNOWN([^[:alnum:]_]|$)|manifest unknown|HTTP(/[0-9.]+)?[[:space:]]+404([[:space:]]|$)|status([=:]|[[:space:]])+404([[:space:]]|$)' \
+        '(^|[^[:alnum:]_])MANIFEST_UNKNOWN([^[:alnum:]_]|$)|manifest unknown|HTTP(/[0-9.]+)?[[:space:]]+404([^0-9]|$)|status([=:]|[[:space:]])+404([^0-9]|$)' \
         "$stderr_file"; then
         INSPECT_STATE="DEFINITELY_NOT_FOUND"
     else
