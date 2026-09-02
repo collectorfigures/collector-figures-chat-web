@@ -77,8 +77,8 @@ inspect_tag() {
         registry_host="${image%%/*}"
         case "$registry_host" in
             localhost:* | 127.0.0.1:*)
-                if "$regctl_bin" --host "reg=$registry_host,tls=disabled" \
-                    manifest head "$ref" \
+                if "$regctl_bin" manifest head \
+                    --host "reg=$registry_host,tls=disabled" "$ref" \
                     >"$stdout_file" 2>"$stderr_file"; then
                     rc=0
                 else
