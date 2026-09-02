@@ -29,6 +29,10 @@ Create a protected GitHub Environment named `cfs-web-release` before enabling th
 - no long-lived registry or signing secret; use the run-scoped `GITHUB_TOKEN` and GitHub OIDC;
 - packages write and id-token write remain confined to the release job.
 
+The Draft Release Workflow now declares the exact source-level binding `environment.name: cfs-web-release`. This is a fail-closed prerequisite only: the Environment, reviewer policy, Team, creation Ruleset, and permissions have not been created or changed. They must be created and independently verified before this Draft PR may be merged.
+
+Formal-tag inspection is planned with `regctl v0.11.6` for linux/amd64, downloaded from the official release and pinned to SHA-256 `8e0e62a497fcdb8048d18aa927a139613176ba0531f412bc541044e28f9856bd`. The workflow must classify only explicit manifest-not-found/HTTP 404 as absent; every other inspect failure remains an error with zero formal writes.
+
 Future separation-of-duties upgrade:
 
 - tag creator: Job;

@@ -39,6 +39,12 @@ const candidate = workflow.indexOf("Publish only the run-scoped candidate tag");
 const sign = workflow.indexOf("Sign, attest and verify the candidate digest");
 const promotionMainRecheck = workflow.indexOf("Reverify protected main before formal tag promotion");
 const promote = workflow.indexOf("Promote the verified digest without overwriting formal tags");
+const pairInspectSha = promotionScript.indexOf('inspect_tag "SHA"');
+const pairInspectVersion = promotionScript.indexOf('inspect_tag "VERSION"');
+const shaMismatchGate = promotionScript.indexOf('sha tag points to a different digest');
+const versionMismatchGate = promotionScript.indexOf('version tag points to a different digest');
+const shaWrite = promotionScript.indexOf('promote_missing_tag "SHA"');
+const versionWrite = promotionScript.indexOf('promote_missing_tag "TAG"');
 
 assert.ok(
     sourceGate >= 0 &&
@@ -55,6 +61,7 @@ assert.ok(
 assert.match(workflow, /load:\s*true/);
 assert.match(workflow, /push:\s*false/);
 assert.doesNotMatch(workflow, /push:\s*true/);
+assert.match(workflow, /environment:\s*\n\s*name:\s*cfs-web-release/);
 assert.match(workflow, /format:\s*spdx-json/);
 assert.match(workflow, /format:\s*cyclonedx/);
 assert.match(workflow, /refs\/remotes\/origin\/main\^\{commit\}/);
@@ -68,22 +75,62 @@ assert.match(
     workflow,
     /CERTIFICATE_IDENTITY: https:\/\/github\.com\/\$\{\{ github\.repository \}\}\/\.github\/workflows\/cfs-release\.yml@refs\/tags\/\$\{\{ github\.ref_name \}\}/,
 );
-assert.match(workflow, /bash scripts\/cfs-promote-oci-tag\.sh/);
+assert.equal((workflow.match(/bash scripts\/cfs-promote-oci-tag\.sh/g) ?? []).length, 1);
+assert.match(workflow, /"\$IMAGE" "\$GITHUB_REF_NAME" "sha-\$GITHUB_SHA" "\$digest" \./);
 assert.doesNotMatch(workflow, /docker buildx imagetools create/);
+assert.doesNotMatch(workflow, /if docker buildx imagetools inspect/);
+assert.match(workflow, /CFS_REGCTL_VERSION:\s*v0\.11\.6/);
+assert.match(workflow, /CFS_REGCTL_SHA256:\s*8e0e62a497fcdb8048d18aa927a139613176ba0531f412bc541044e28f9856bd/);
+assert.match(workflow, /sha256sum -c -/);
+assert.match(workflow, /OCI-INSPECTOR\.json/);
+assert.match(workflow, /test "\$\{#digest\}" -eq 71/);
+assert.match(workflow, /\^sha256:\[0-9a-f\]\{64\}\$/);
 assert.match(promotionScript, /docker buildx imagetools create \\\n\s*--prefer-index=false \\\n\s*--metadata-file/);
 assert.doesNotMatch(promotionScript, /imagetools create\s+--tag/);
 assert.match(promotionScript, /\."containerimage\.descriptor"\.digest/);
-assert.match(promotionScript, /test "\$metadata_digest" = "\$candidate_digest"/);
-assert.match(promotionScript, /test "\$raw_manifest_digest" = "\$candidate_digest"/);
-assert.match(promotionScript, /refusing to overwrite/);
+assert.match(promotionScript, /\^sha256:\[0-9a-f\]\{64\}\$/);
+assert.match(promotionScript, /MANIFEST_UNKNOWN/);
+assert.match(promotionScript, /manifest unknown/);
+assert.match(promotionScript, /manifest head "\$ref"/);
+assert.doesNotMatch(promotionScript, /manifest head --format/);
+assert.match(promotionScript, /DEFINITELY_NOT_FOUND/);
+assert.match(promotionScript, /INSPECT_STATE="ERROR"/);
+assert.match(promotionScript, /formal tag pair preflight failed before writes/);
+assert.ok(
+    pairInspectSha >= 0 &&
+        pairInspectVersion > pairInspectSha &&
+        shaMismatchGate > pairInspectVersion &&
+        versionMismatchGate > shaMismatchGate &&
+        shaWrite > versionMismatchGate &&
+        versionWrite > shaWrite,
+);
+assert.match(promotionScript, /CFS_OCI_FAIL_BEFORE_VERSION_WRITE/);
+assert.match(promotionScript, /partial_version_tag:\s*false/);
 assert.match(integrationScript, /registry:2@sha256:46faa9a1ae6813194b53921a370f2f4f8c5e1aae228a89bceafef5847a6a3278/);
 assert.match(integrationScript, /127\.0\.0\.1:5000:5000/);
-assert.match(integrationScript, /different_digest_rejected=true/);
-assert.match(integrationScript, /formal_unchanged=true/);
+assert.match(integrationScript, /# A: both formal tags are absent/);
+assert.match(integrationScript, /# B: both formal tags already exist/);
+assert.match(integrationScript, /# C: SHA exists at a different digest/);
+assert.match(integrationScript, /# D: version exists at a different digest/);
+assert.match(integrationScript, /# E: SHA can be created/);
+assert.match(integrationScript, /# F: a non-not-found inspect error/);
+assert.match(integrationScript, /# G: every malformed digest/);
+assert.match(integrationScript, /# H: destroy the localhost Registry/);
+assert.match(integrationScript, /CFS_OCI_INSPECT_OVERRIDE/);
+assert.match(integrationScript, /pair_preflight=true/);
+assert.match(integrationScript, /sha_first=true/);
+assert.match(integrationScript, /version_last=true/);
+assert.match(integrationScript, /inspect_error_fail_closed=true/);
+assert.match(integrationScript, /malformed_digest_rejected=true/);
+assert.match(integrationScript, /partial_version_tag=false/);
+assert.match(integrationScript, /cleanup=true/);
 assert.match(ciWorkflow, /permissions:\s*\n\s*contents: read/);
 assert.doesNotMatch(ciWorkflow, /packages:\s*write|id-token:\s*write/);
 assert.match(ciWorkflow, /push:\s*false/);
 assert.match(ciWorkflow, /fetch-depth:\s*0/);
+assert.match(ciWorkflow, /CFS_REGCTL_VERSION:\s*v0\.11\.6/);
+assert.match(ciWorkflow, /CFS_REGCTL_SHA256:\s*8e0e62a497fcdb8048d18aa927a139613176ba0531f412bc541044e28f9856bd/);
+assert.match(ciWorkflow, /sha256sum -c -/);
 assert.match(ciWorkflow, /CFS_DOCKER_DIST_VERSION=v0\.0\.0-cfs-ci\./);
 assert.match(ciWorkflow, /CFS_WEB_LOCAL_DOCKER_BUILD_PASS/);
 assert.match(ciWorkflow, /cfs-test-local-registry-promotion\.sh/);
@@ -104,6 +151,9 @@ assert.match(permissionPlan, /Job-only release tag creator/);
 assert.match(permissionPlan, /prevent self-review: `false`/);
 assert.match(permissionPlan, /Future Technical Owner/);
 assert.match(permissionPlan, /prevent self-review: `true`/);
+assert.match(permissionPlan, /environment\.name: cfs-web-release/);
+assert.match(permissionPlan, /regctl v0\.11\.6/);
+assert.match(permissionPlan, /8e0e62a497fcdb8048d18aa927a139613176ba0531f412bc541044e28f9856bd/);
 assert.match(permissionPlan, /not applied/i);
 
 const literalSecretPatterns = [
@@ -119,6 +169,8 @@ for (const source of [
     packageText,
     lockfile,
     permissionPlan,
+    promotionScript,
+    integrationScript,
     replyTests,
     htmlUtilsTests,
     previewTests,
@@ -127,5 +179,5 @@ for (const source of [
 }
 
 console.log(
-    "CFS_WEB_RELEASE_WORKFLOW_PASS main_gate=true candidate_first=true exact_identity=true prefer_index_false=true metadata_raw_candidate_equal=true final_no_overwrite=true local_registry_contract=true package_pins=true actual_credentials=0",
+    "CFS_WEB_RELEASE_WORKFLOW_R2_PASS main_gate=true candidate_first=true exact_identity=true prefer_index_false=true metadata_raw_candidate_equal=true pair_preflight=true sha_first=true version_last=true inspect_error_fail_closed=true malformed_digest_rejected=true environment=cfs-web-release local_registry_contract=true package_pins=true actual_credentials=0",
 );
