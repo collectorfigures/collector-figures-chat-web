@@ -141,30 +141,20 @@ jobs:
                   cosign verify-attestation --type slsaprovenance "$IMAGE@$digest" --certificate-identity "$CERTIFICATE_IDENTITY" --certificate-oidc-issuer "https://token.actions.githubusercontent.com" > COSIGN-ATTESTATION-VERIFY.json
                   jq -e . COSIGN-VERIFY.json COSIGN-ATTESTATION-VERIFY.json >/dev/null
                   sha256sum OCI-DIGEST.txt OCI-MANIFEST-CANDIDATE.json COSIGN-VERIFY.json COSIGN-ATTESTATION-VERIFY.json >> PREPUBLISH-SHA256SUMS.txt
+            - name: Reverify protected main before formal tag promotion
+              run: |
+                  git fetch --no-tags --depth=1 origin +refs/heads/main:refs/remotes/origin/main
+                  test "$(git rev-parse 'refs/remotes/origin/main^{commit}')" = "$GITHUB_SHA"
             - name: Promote the verified digest without overwriting formal tags
               run: |
                   digest="$(cut -d' ' -f1 OCI-DIGEST.txt)"
-                  promote_or_verify_tag() {
-                    tag="$1"
-                    final_manifest="$2"
-                    existing_manifest="${final_manifest%.json}-EXISTING.json"
-                    if docker buildx imagetools inspect --raw "$IMAGE:$tag" > "$existing_manifest" 2>/dev/null; then
-                      existing_digest="sha256:$(sha256sum "$existing_manifest" | cut -d' ' -f1)"
-                      if [ "$existing_digest" != "$digest" ]; then
-                        echo "::error::Refusing to overwrite $IMAGE:$tag ($existing_digest != $digest)"
-                        exit 1
-                      fi
-                    else
-                      rm -f "$existing_manifest"
-                      docker buildx imagetools create --tag "$IMAGE:$tag" "$IMAGE@$digest"
-                    fi
-                    docker buildx imagetools inspect --raw "$IMAGE:$tag" > "$final_manifest"
-                    final_digest="sha256:$(sha256sum "$final_manifest" | cut -d' ' -f1)"
-                    test "$final_digest" = "$digest"
-                  }
-                  promote_or_verify_tag "$GITHUB_REF_NAME" OCI-MANIFEST-TAG.json
-                  promote_or_verify_tag "sha-$GITHUB_SHA" OCI-MANIFEST-SHA.json
-                  sha256sum OCI-MANIFEST-TAG.json OCI-MANIFEST-SHA.json >> PREPUBLISH-SHA256SUMS.txt
+                  bash scripts/cfs-promote-oci-tag.sh \
+                    "$IMAGE" "$GITHUB_REF_NAME" "$digest" \
+                    OCI-MANIFEST-TAG.json OCI-PROMOTION-TAG-METADATA.json
+                  bash scripts/cfs-promote-oci-tag.sh \
+                    "$IMAGE" "sha-$GITHUB_SHA" "$digest" \
+                    OCI-MANIFEST-SHA.json OCI-PROMOTION-SHA-METADATA.json
+                  sha256sum OCI-MANIFEST-TAG.json OCI-MANIFEST-SHA.json OCI-PROMOTION-TAG-METADATA.json OCI-PROMOTION-SHA-METADATA.json >> PREPUBLISH-SHA256SUMS.txt
             - name: Upload complete release evidence
               if: always()
               uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -183,6 +173,8 @@ jobs:
                       OCI-MANIFEST-SHA.json
                       OCI-MANIFEST-TAG-EXISTING.json
                       OCI-MANIFEST-TAG.json
+                      OCI-PROMOTION-SHA-METADATA.json
+                      OCI-PROMOTION-TAG-METADATA.json
                       PREPUBLISH-SHA256SUMS.txt
                       RELEASE-SOURCE.json
                       sbom.cyclonedx.json

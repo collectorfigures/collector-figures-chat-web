@@ -23,10 +23,18 @@ Keep the existing update/deletion ruleset unchanged and add a separate creation-
 Create a protected GitHub Environment named `cfs-web-release` before enabling the release workflow:
 
 - required reviewer: Job;
-- prevent self-review where supported;
+- prevent self-review: `false`;
+- reason: Job is currently both the sole tag creator and sole reviewer, so enabling prevent-self-review would permanently lock the release path;
 - deployment branch/tag policy limited to `cfs-web-v*`;
 - no long-lived registry or signing secret; use the run-scoped `GITHUB_TOKEN` and GitHub OIDC;
 - packages write and id-token write remain confined to the release job.
+
+Future separation-of-duties upgrade:
+
+- tag creator: Job;
+- Environment required reviewer: Future Technical Owner;
+- prevent self-review: `true`;
+- apply only after the Technical Owner role exists and a non-release dry run proves the approval path cannot lock out releases.
 
 ## Risks and rollback
 

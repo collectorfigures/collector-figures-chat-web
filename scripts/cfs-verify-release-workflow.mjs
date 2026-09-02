@@ -23,6 +23,11 @@ const previewTests = readFileSync(
     new URL("../apps/web/test/unit-tests/stores/message-preview/previews/MessageEventPreview-test.ts", import.meta.url),
     "utf8",
 );
+const promotionScript = readFileSync(new URL("../scripts/cfs-promote-oci-tag.sh", import.meta.url), "utf8");
+const integrationScript = readFileSync(
+    new URL("../scripts/cfs-test-local-registry-promotion.sh", import.meta.url),
+    "utf8",
+);
 const sourceGate = workflow.indexOf("Verify release tag is the exact protected main commit");
 const localBuild = workflow.indexOf("Build exact source locally");
 const scan = workflow.indexOf("Scan local image before publication");
@@ -31,6 +36,7 @@ const mainRecheck = workflow.indexOf("Reverify protected main before any registr
 const login = workflow.indexOf("docker/login-action");
 const candidate = workflow.indexOf("Publish only the run-scoped candidate tag");
 const sign = workflow.indexOf("Sign, attest and verify the candidate digest");
+const promotionMainRecheck = workflow.indexOf("Reverify protected main before formal tag promotion");
 const promote = workflow.indexOf("Promote the verified digest without overwriting formal tags");
 
 assert.ok(
@@ -42,7 +48,8 @@ assert.ok(
         login > mainRecheck &&
         candidate > login &&
         sign > candidate &&
-        promote > sign,
+        promotionMainRecheck > sign &&
+        promote > promotionMainRecheck,
 );
 assert.match(workflow, /load:\s*true/);
 assert.match(workflow, /push:\s*false/);
@@ -60,11 +67,23 @@ assert.match(
     workflow,
     /CERTIFICATE_IDENTITY: https:\/\/github\.com\/\$\{\{ github\.repository \}\}\/\.github\/workflows\/cfs-release\.yml@refs\/tags\/\$\{\{ github\.ref_name \}\}/,
 );
-assert.match(workflow, /promote_or_verify_tag/);
-assert.match(workflow, /test "\$existing_digest" = "\$digest"|"\$existing_digest" != "\$digest"/);
-assert.match(workflow, /docker buildx imagetools create --tag "\$IMAGE:\$tag" "\$IMAGE@\$digest"/);
-assert.match(workflow, /promote_or_verify_tag "\$GITHUB_REF_NAME" OCI-MANIFEST-TAG\.json/);
-assert.match(workflow, /promote_or_verify_tag "sha-\$GITHUB_SHA" OCI-MANIFEST-SHA\.json/);
+assert.match(workflow, /bash scripts\/cfs-promote-oci-tag\.sh/);
+assert.doesNotMatch(workflow, /docker buildx imagetools create/);
+assert.match(promotionScript, /docker buildx imagetools create \\\n\s*--prefer-index=false \\\n\s*--metadata-file/);
+assert.doesNotMatch(promotionScript, /imagetools create\s+--tag/);
+assert.match(promotionScript, /containerimage\.descriptor\.digest/);
+assert.match(promotionScript, /test "\$metadata_digest" = "\$candidate_digest"/);
+assert.match(promotionScript, /test "\$raw_manifest_digest" = "\$candidate_digest"/);
+assert.match(promotionScript, /refusing to overwrite/);
+assert.match(integrationScript, /registry:2@sha256:46faa9a1ae6813194b53921a370f2f4f8c5e1aae228a89bceafef5847a6a3278/);
+assert.match(integrationScript, /127\.0\.0\.1:5000:5000/);
+assert.match(integrationScript, /different_digest_rejected=true/);
+assert.match(integrationScript, /formal_unchanged=true/);
+assert.match(ciWorkflow, /permissions:\s*\n\s*contents: read/);
+assert.doesNotMatch(ciWorkflow, /packages:\s*write|id-token:\s*write/);
+assert.match(ciWorkflow, /push:\s*false/);
+assert.match(ciWorkflow, /CFS_WEB_LOCAL_DOCKER_BUILD_PASS/);
+assert.match(ciWorkflow, /cfs-test-local-registry-promotion\.sh/);
 assert.match(workflow, /PREPUBLISH-SHA256SUMS\.txt/);
 assert.doesNotMatch(workflow.slice(0, promote), /docker tag "\$LOCAL_IMAGE" "\$IMAGE:\$GITHUB_REF_NAME"/);
 
@@ -77,6 +96,9 @@ assert.match(permissionPlan, /Before/);
 assert.match(permissionPlan, /After/);
 assert.match(permissionPlan, /cfs-web-v\*/);
 assert.match(permissionPlan, /Job-only release tag creator/);
+assert.match(permissionPlan, /prevent self-review: `false`/);
+assert.match(permissionPlan, /Future Technical Owner/);
+assert.match(permissionPlan, /prevent self-review: `true`/);
 assert.match(permissionPlan, /not applied/i);
 
 const literalSecretPatterns = [
@@ -100,5 +122,5 @@ for (const source of [
 }
 
 console.log(
-    "CFS_WEB_RELEASE_WORKFLOW_PASS main_gate=true candidate_first=true exact_identity=true final_no_overwrite=true package_pins=true actual_credentials=0",
+    "CFS_WEB_RELEASE_WORKFLOW_PASS main_gate=true candidate_first=true exact_identity=true prefer_index_false=true metadata_raw_candidate_equal=true final_no_overwrite=true local_registry_contract=true package_pins=true actual_credentials=0",
 );

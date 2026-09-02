@@ -9,6 +9,9 @@ on:
 permissions:
     contents: read
 
+env:
+    CFS_CI_IMAGE: cfs-web-ci:${{ github.sha }}
+
 jobs:
     verify:
         runs-on: ubuntu-24.04
@@ -17,6 +20,7 @@ jobs:
             - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
               with:
                   node-version: "24"
+            - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
             - name: Install the locked package manager
               run: |
                   corepack enable
@@ -87,3 +91,42 @@ jobs:
                   grep -q 'notificationclick' apps/web/webapp/cfs-push/sw.js
                   ! grep -Eqi 'access[_-]?token|MatrixClient|indexedDB|getAuthData' apps/web/webapp/cfs-push/sw.js apps/web/webapp/cfs-push/sw.js.map
                   ! grep -Eqi 'access[_-]?token|Authorization|Bearer|idbLoad|tryDecryptToken|getAuthData|pickleKey|media/v3' apps/web/webapp/sw.js apps/web/webapp/sw.js.map
+            - name: Build the complete Web image locally without publication
+              uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+              with:
+                  context: .
+                  file: apps/web/Dockerfile
+                  platforms: linux/amd64
+                  load: true
+                  push: false
+                  tags: ${{ env.CFS_CI_IMAGE }}
+                  build-args: CFS_SOURCE_COMMIT=${{ github.sha }}
+                  provenance: false
+                  sbom: false
+            - name: Verify the local Web image contract
+              run: |
+                  user="$(docker image inspect "$CFS_CI_IMAGE" --format '{{.Config.User}}')"
+                  test -n "$user"
+                  test "$user" != "0"
+                  test "$user" != "root"
+                  test "$(docker image inspect "$CFS_CI_IMAGE" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" = "$GITHUB_SHA"
+                  test "$(docker image inspect "$CFS_CI_IMAGE" --format '{{.Os}}/{{.Architecture}}')" = "linux/amd64"
+                  test "$(docker image inspect "$CFS_CI_IMAGE" --format '{{json .Config.Healthcheck.Test}}')" != "null"
+                  docker run --rm --entrypoint /sbin/apk "$CFS_CI_IMAGE" info -v jq moreutils > CFS-WEB-APK-VERSIONS.txt
+                  grep -qx 'jq-1.8.2-r0' CFS-WEB-APK-VERSIONS.txt
+                  grep -qx 'moreutils-0.70-r1' CFS-WEB-APK-VERSIONS.txt
+                  printf 'CFS_WEB_LOCAL_DOCKER_BUILD_PASS platform=linux/amd64 nonroot=true revision=%s healthcheck=true jq=1.8.2-r0 moreutils=0.70-r1 publication=0\n' "$GITHUB_SHA"
+            - name: Test digest-preserving promotion in a local Registry
+              run: bash scripts/cfs-test-local-registry-promotion.sh "$CFS_CI_IMAGE"
+            - name: Verify focused secret scan and range diff
+              env:
+                  PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+              run: |
+                  node scripts/cfs-verify-release-workflow.mjs | tee CFS-PREFLIGHT-SECRET-SCAN.txt
+                  grep -q 'actual_credentials=0' CFS-PREFLIGHT-SECRET-SCAN.txt
+                  if [ -n "$PR_BASE_SHA" ]; then
+                    git fetch --no-tags --depth=1 origin "$PR_BASE_SHA"
+                    git diff --check "$PR_BASE_SHA...$GITHUB_SHA"
+                  else
+                    git diff --check "$GITHUB_SHA^...$GITHUB_SHA"
+                  fi
