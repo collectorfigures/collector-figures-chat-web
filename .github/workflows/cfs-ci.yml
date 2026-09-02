@@ -116,7 +116,7 @@ jobs:
                   test "$(docker image inspect "$CFS_CI_IMAGE" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" = "$GITHUB_SHA"
                   test "$(docker image inspect "$CFS_CI_IMAGE" --format '{{.Os}}/{{.Architecture}}')" = "linux/amd64"
                   test "$(docker image inspect "$CFS_CI_IMAGE" --format '{{json .Config.Healthcheck.Test}}')" != "null"
-                  docker run --rm --entrypoint /sbin/apk "$CFS_CI_IMAGE" info -v jq moreutils > CFS-WEB-APK-VERSIONS.txt
+                  docker run --rm --entrypoint /sbin/apk "$CFS_CI_IMAGE" info -v > CFS-WEB-APK-VERSIONS.txt
                   grep -qx 'jq-1.8.2-r0' CFS-WEB-APK-VERSIONS.txt
                   grep -qx 'moreutils-0.70-r1' CFS-WEB-APK-VERSIONS.txt
                   printf 'CFS_WEB_LOCAL_DOCKER_BUILD_PASS platform=linux/amd64 nonroot=true revision=%s healthcheck=true jq=1.8.2-r0 moreutils=0.70-r1 publication=0\n' "$GITHUB_SHA"
