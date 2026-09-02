@@ -104,6 +104,7 @@ for _ in $(seq 1 30); do
     sleep 1
 done
 test "$ready" = true
+export CFS_OCI_DEBUG_LOCAL_INSPECT=1
 
 # A: both formal tags are absent. SHA must be written first and version last.
 repo_a="$repository_prefix-a"

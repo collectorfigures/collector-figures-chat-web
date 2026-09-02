@@ -63,6 +63,7 @@ inspect_tag() {
     stdout_file="$evidence_dir/.inspect-$label.stdout"
     stderr_file="$evidence_dir/.inspect-$label.stderr"
     state_file="$evidence_dir/OCI-INSPECT-$label.json"
+    registry_host="${image%%/*}"
     rc=0
 
     rm -f "$stdout_file" "$stderr_file"
@@ -74,7 +75,6 @@ inspect_tag() {
             rc=$?
         fi
     else
-        registry_host="${image%%/*}"
         case "$registry_host" in
             localhost:* | 127.0.0.1:*)
                 if "$regctl_bin" manifest head \
@@ -116,6 +116,14 @@ inspect_tag() {
     else
         INSPECT_STATE="ERROR"
         echo "OCI inspector failed without an explicit manifest-not-found result for $label" >&2
+        case "$registry_host" in
+            localhost:* | 127.0.0.1:*)
+                if [ "${CFS_OCI_DEBUG_LOCAL_INSPECT:-0}" = "1" ]; then
+                    printf 'CFS_LOCAL_INSPECT_ERROR rc=%s message=' "$rc" >&2
+                    sed -n '1p' "$stderr_file" >&2
+                fi
+                ;;
+        esac
     fi
 
     jq -n \
