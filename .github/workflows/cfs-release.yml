@@ -10,7 +10,7 @@ permissions:
     id-token: write
 
 concurrency:
-    group: cfs-web-release-${{ github.ref_name }}
+    group: cfs-web-immutable-release
     cancel-in-progress: false
 
 env:

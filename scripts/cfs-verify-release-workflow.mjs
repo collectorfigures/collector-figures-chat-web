@@ -29,6 +29,41 @@ const integrationScript = readFileSync(
     new URL("../scripts/cfs-test-local-registry-promotion.sh", import.meta.url),
     "utf8",
 );
+const expectedConcurrencyGroup = "cfs-web-immutable-release";
+const releaseTagFixtures = ["cfs-web-v1.0.0", "cfs-web-v1.0.1"];
+
+function verifyReleaseSingleFlight(source) {
+    const match = source.match(
+        /^concurrency:\r?\n {4}group: ([^\r\n]+)\r?\n {4}cancel-in-progress: (true|false)\s*$/m,
+    );
+    assert.ok(match, "release concurrency must be a workflow-level block");
+    assert.equal((source.match(/^concurrency:/gm) ?? []).length, 1);
+    assert.ok(source.indexOf("concurrency:") < source.indexOf("jobs:"));
+    assert.equal(match[1], expectedConcurrencyGroup);
+    assert.equal(match[2], "false");
+    assert.doesNotMatch(match[1], /\$\{\{|ref|ref_name|sha|run_id|run_attempt|version|tag/i);
+
+    const mappedGroups = releaseTagFixtures.map(() => match[1]);
+    assert.deepEqual(mappedGroups, [expectedConcurrencyGroup, expectedConcurrencyGroup]);
+    assert.equal(new Set(mappedGroups).size, 1);
+}
+
+verifyReleaseSingleFlight(workflow);
+for (const dynamicGroup of [
+    "cfs-web-release-${{ github.ref_name }}",
+    "cfs-web-release-${{ github.ref }}",
+    "cfs-web-release-${{ github.sha }}",
+    "cfs-web-release-${{ github.run_id }}",
+    "cfs-web-release-${{ github.run_attempt }}",
+    "cfs-web-release-${{ inputs.version }}",
+    "cfs-web-release-${{ inputs.tag }}",
+]) {
+    const fixture = workflow.replace(
+        `    group: ${expectedConcurrencyGroup}`,
+        `    group: ${dynamicGroup}`,
+    );
+    assert.throws(() => verifyReleaseSingleFlight(fixture));
+}
 const sourceGate = workflow.indexOf("Verify release tag is the exact protected main commit");
 const localBuild = workflow.indexOf("Build exact source locally");
 const scan = workflow.indexOf("Scan local image before publication");
@@ -182,4 +217,7 @@ for (const source of [
 
 console.log(
     "CFS_WEB_RELEASE_WORKFLOW_R2_PASS main_gate=true candidate_first=true exact_identity=true prefer_index_false=true metadata_raw_candidate_equal=true pair_preflight=true sha_first=true version_last=true inspect_error_fail_closed=true malformed_digest_rejected=true environment=cfs-web-release local_registry_contract=true package_pins=true actual_credentials=0",
+);
+console.log(
+    "CFS_RELEASE_SINGLE_FLIGHT_CONTRACT_PASS release_single_flight=true different_version_tags_same_group=true cross_tag_parallelism=false cancel_in_progress=false group=cfs-web-immutable-release",
 );
