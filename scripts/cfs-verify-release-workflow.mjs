@@ -5,6 +5,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 */
 
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 
 const workflow = readFileSync(new URL("../.github/workflows/cfs-release.yml", import.meta.url), "utf8");
@@ -14,10 +15,7 @@ const dockerPackage = readFileSync(new URL("./docker-package.sh", import.meta.ur
 const packageText = readFileSync(new URL("../apps/web/package.json", import.meta.url), "utf8");
 const packageJson = JSON.parse(packageText);
 const lockfile = readFileSync(new URL("../pnpm-lock.yaml", import.meta.url), "utf8");
-const permissionPlan = readFileSync(
-    new URL("../docs/CFS-RELEASE-PERMISSIONS-PLAN.md", import.meta.url),
-    "utf8",
-);
+const permissionPlan = readFileSync(new URL("../docs/CFS-RELEASE-PERMISSIONS-PLAN.md", import.meta.url), "utf8");
 const replyTests = readFileSync(new URL("../apps/web/test/unit-tests/utils/Reply-test.ts", import.meta.url), "utf8");
 const htmlUtilsTests = readFileSync(new URL("../apps/web/test/unit-tests/HtmlUtils-test.tsx", import.meta.url), "utf8");
 const previewTests = readFileSync(
@@ -29,8 +27,104 @@ const integrationScript = readFileSync(
     new URL("../scripts/cfs-test-local-registry-promotion.sh", import.meta.url),
     "utf8",
 );
+const sha256 = (source) => createHash("sha256").update(source).digest("hex");
 const expectedConcurrencyGroup = "cfs-web-immutable-release";
 const releaseTagFixtures = ["cfs-web-v1.0.0", "cfs-web-v1.0.1", "cfs-web-v1.0.2"];
+const exactReleaseTagPatternText = String.raw`^cfs-web-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`;
+const exactReleaseTagPattern = new RegExp(exactReleaseTagPatternText);
+const validReleaseTags = ["cfs-web-v0.0.0", "cfs-web-v0.1.0", "cfs-web-v1.0.0", "cfs-web-v12.34.56"];
+const invalidReleaseTags = [
+    "cfs-web-v",
+    "cfs-web-v1",
+    "cfs-web-v1.0",
+    "cfs-web-v1.0.0.0",
+    "cfs-web-v01.0.0",
+    "cfs-web-v1.00.0",
+    "cfs-web-v1.0.00",
+    "cfs-web-v1.0.0-rc.1",
+    "cfs-web-v1.0.0+build.1",
+    "cfs-web-v1.0.0x",
+    "cfs-web-v1.0.0/extra",
+    "cfs-push-v1.0.0",
+    "CFS-WEB-v1.0.0",
+    " cfs-web-v1.0.0",
+    "cfs-web-v1.0.0 ",
+    "cfs-web-v1.0.0\n",
+];
+
+function verifyStrictReleaseTagAdmission(source) {
+    const validateJobStart = source.indexOf("    validate-release-tag:");
+    const releaseJobStart = source.indexOf("    build-scan-publish:");
+    assert.ok(validateJobStart >= 0 && releaseJobStart > validateJobStart);
+
+    const validateBlock = source.slice(validateJobStart, releaseJobStart);
+    const releaseBlock = source.slice(releaseJobStart);
+    const releaseAdmission = releaseBlock.indexOf("- name: Revalidate formal release tag and record admission");
+    const checkout = releaseBlock.indexOf("actions/checkout@");
+    const registryLogin = releaseBlock.indexOf("docker/login-action");
+
+    assert.match(source, /tags: \["cfs-web-v\*"\]/);
+    assert.equal(source.split(exactReleaseTagPatternText).length - 1, 2);
+    assert.match(validateBlock, /runs-on: ubuntu-24\.04/);
+    assert.match(validateBlock, /permissions:\r?\n {12}contents: read\r?\n {8}steps:/);
+    assert.doesNotMatch(
+        validateBlock,
+        /packages:\s*write|id-token:\s*write|environment:|actions\/checkout|docker|cosign|ghcr\.io/,
+    );
+    assert.match(validateBlock, /test "\$GITHUB_REF_TYPE" = "tag"/);
+    assert.match(validateBlock, /test "\$GITHUB_REF" = "refs\/tags\/\$GITHUB_REF_NAME"/);
+    assert.match(releaseBlock, /needs: validate-release-tag/);
+    assert.ok(releaseAdmission >= 0 && checkout > releaseAdmission && registryLogin > checkout);
+    assert.match(releaseBlock.slice(0, checkout), /RELEASE-TAG-ADMISSION\.json/);
+    assert.match(releaseBlock, /stable_three_component_version: true/);
+    assert.match(releaseBlock, /prerelease_allowed: false/);
+    assert.match(releaseBlock, /build_metadata_allowed: false/);
+    assert.match(releaseBlock, /registry_mutations_before_validation: 0/);
+    assert.match(releaseBlock, /RELEASE-TAG-ADMISSION\.json[\s\S]*PREPUBLISH-SHA256SUMS\.txt/);
+    assert.match(releaseBlock, /PREPUBLISH-SHA256SUMS\.txt\r?\n {22}RELEASE-TAG-ADMISSION\.json/);
+}
+
+for (const tag of validReleaseTags) assert.equal(exactReleaseTagPattern.test(tag), true, tag);
+for (const tag of invalidReleaseTags) assert.equal(exactReleaseTagPattern.test(tag), false, tag);
+
+verifyStrictReleaseTagAdmission(workflow);
+const validateJobStart = workflow.indexOf("    validate-release-tag:");
+const releaseJobStart = workflow.indexOf("    build-scan-publish:");
+const validateJobBlock = workflow.slice(validateJobStart, releaseJobStart);
+const releaseAdmissionStart = workflow.indexOf(
+    "            - name: Revalidate formal release tag and record admission",
+);
+const checkoutStart = workflow.indexOf("            - uses: actions/checkout@");
+const releaseAdmissionBlock = workflow.slice(releaseAdmissionStart, checkoutStart);
+const weakenedReleaseWorkflows = [
+    workflow.replace(validateJobBlock, ""),
+    workflow.replace("        needs: validate-release-tag\n", ""),
+    workflow.replace(releaseAdmissionBlock, ""),
+    workflow.split(exactReleaseTagPatternText).join("^cfs-web-v.*$"),
+    workflow.split(exactReleaseTagPatternText).join("^cfs-web-v"),
+    workflow.split(exactReleaseTagPatternText).join(String.raw`^cfs-web-v[0-9]+\.[0-9]+\.[0-9]+$`),
+    workflow
+        .split(exactReleaseTagPatternText)
+        .join(String.raw`^cfs-web-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.[0-9]+)?$`),
+    workflow
+        .split(exactReleaseTagPatternText)
+        .join(String.raw`^cfs-web-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+build\.[0-9]+)?$`),
+    workflow.replace(
+        "        permissions:\n            contents: read\n        steps:",
+        "        permissions:\n            contents: read\n            packages: write\n        steps:",
+    ),
+    workflow.replace(
+        "        permissions:\n            contents: read\n        steps:",
+        "        permissions:\n            contents: read\n            id-token: write\n        steps:",
+    ),
+    workflow
+        .replace(releaseAdmissionBlock, "")
+        .replace(
+            "            - name: Publish only the run-scoped candidate tag",
+            `${releaseAdmissionBlock}            - name: Publish only the run-scoped candidate tag`,
+        ),
+];
+for (const fixture of weakenedReleaseWorkflows) assert.throws(() => verifyStrictReleaseTagAdmission(fixture));
 
 function verifyReleaseSingleFlight(source) {
     const match = source.match(
@@ -80,10 +174,7 @@ for (const dynamicGroup of [
     "cfs-web-release-${{ inputs.version }}",
     "cfs-web-release-${{ inputs.tag }}",
 ]) {
-    const fixture = workflow.replace(
-        `    group: ${expectedConcurrencyGroup}`,
-        `    group: ${dynamicGroup}`,
-    );
+    const fixture = workflow.replace(`    group: ${expectedConcurrencyGroup}`, `    group: ${dynamicGroup}`);
     assert.throws(() => verifyReleaseSingleFlight(fixture));
 }
 const sourceGate = workflow.indexOf("Verify release tag is the exact protected main commit");
@@ -98,8 +189,8 @@ const promotionMainRecheck = workflow.indexOf("Reverify protected main before fo
 const promote = workflow.indexOf("Promote the verified digest without overwriting formal tags");
 const pairInspectSha = promotionScript.indexOf('inspect_tag "SHA"');
 const pairInspectVersion = promotionScript.indexOf('inspect_tag "VERSION"');
-const shaMismatchGate = promotionScript.indexOf('sha tag points to a different digest');
-const versionMismatchGate = promotionScript.indexOf('version tag points to a different digest');
+const shaMismatchGate = promotionScript.indexOf("sha tag points to a different digest");
+const versionMismatchGate = promotionScript.indexOf("version tag points to a different digest");
 const shaWrite = promotionScript.indexOf('promote_missing_tag "SHA"');
 const versionWrite = promotionScript.indexOf('promote_missing_tag "TAG"');
 
@@ -123,7 +214,10 @@ assert.match(workflow, /format:\s*spdx-json/);
 assert.match(workflow, /format:\s*cyclonedx/);
 assert.match(workflow, /refs\/remotes\/origin\/main\^\{commit\}/);
 assert.match(workflow, /test "\$tag_commit" = "\$main_commit"/);
-assert.match(workflow, /CANDIDATE_TAG: candidate-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}-\$\{\{ github\.sha \}\}/);
+assert.match(
+    workflow,
+    /CANDIDATE_TAG: candidate-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}-\$\{\{ github\.sha \}\}/,
+);
 assert.match(workflow, /cosign sign --yes/);
 assert.match(workflow, /cosign verify-attestation --type slsaprovenance/);
 assert.match(workflow, /--certificate-identity "\$CERTIFICATE_IDENTITY"/);
@@ -183,6 +277,8 @@ assert.match(integrationScript, /inspect_error_fail_closed=true/);
 assert.match(integrationScript, /malformed_digest_rejected=true/);
 assert.match(integrationScript, /partial_version_tag=false/);
 assert.match(integrationScript, /cleanup=true/);
+assert.equal(sha256(promotionScript), "9221b65bae96a80781ba008209e0869bb706dcfe50e26ae7f445b41880be6a5f");
+assert.equal(sha256(integrationScript), "dd0376e6e77543d8ce54531e7af1d3b610ac9534870854e934683c1aacd5904e");
 assert.match(ciWorkflow, /permissions:\s*\n\s*contents: read/);
 assert.doesNotMatch(ciWorkflow, /packages:\s*write|id-token:\s*write/);
 assert.match(ciWorkflow, /push:\s*false/);
@@ -203,17 +299,28 @@ assert.match(dockerfile, /apk add --no-cache jq=1\.8\.2-r0 moreutils=0\.70-r1/);
 assert.match(dockerfile, /apk add --no-cache unzip=6\.0-r15/);
 assert.match(dockerfile, /ARG CFS_DOCKER_DIST_VERSION=""/);
 assert.match(dockerPackage, /if \[\[ -n \$\{CFS_DOCKER_DIST_VERSION:-\} \]\]/);
-assert.match(permissionPlan, /Before/);
-assert.match(permissionPlan, /After/);
+assert.match(permissionPlan, /APPLIED AND READ-BACK VERIFIED ON 2026-09-03/);
+assert.match(permissionPlan, /Historical state before R3/);
+assert.match(permissionPlan, /Applied state after R3/);
 assert.match(permissionPlan, /cfs-web-v\*/);
 assert.match(permissionPlan, /Job-only release tag creator/);
 assert.match(permissionPlan, /prevent self-review: `false`/);
 assert.match(permissionPlan, /Future Technical Owner/);
 assert.match(permissionPlan, /prevent self-review: `true`/);
 assert.match(permissionPlan, /environment\.name: cfs-web-release/);
+assert.match(permissionPlan, /CFS Release Tag Creators/);
+assert.match(permissionPlan, /cfs-release-tag-creators/);
+assert.match(permissionPlan, /Team ID: `19325995`/);
+assert.match(permissionPlan, /Ruleset: `Restrict cfs-web release tag creation` \/ ID `22177545`/);
+assert.match(permissionPlan, /Ruleset: `Protect cfs-web release tags` \/ ID `21900095`/);
+assert.match(permissionPlan, /coarse namespace filter/);
+assert.match(permissionPlan, /authoritative Formal Release admission is the Runtime exact regex/);
+assert.ok(permissionPlan.includes(exactReleaseTagPatternText));
+assert.match(permissionPlan, /Phase 1 accepts only stable `MAJOR\.MINOR\.PATCH`/);
+assert.match(permissionPlan, /manually check the exact stable three-component format/);
 assert.match(permissionPlan, /regctl v0\.11\.6/);
 assert.match(permissionPlan, /8e0e62a497fcdb8048d18aa927a139613176ba0531f412bc541044e28f9856bd/);
-assert.match(permissionPlan, /not applied/i);
+assert.doesNotMatch(permissionPlan, /not applied/i);
 
 const literalSecretPatterns = [
     /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/,
@@ -245,4 +352,7 @@ console.log(
 );
 console.log(
     "CFS_RELEASE_QUEUE_PRESERVATION_CONTRACT_PASS release_single_flight=true three_version_tags_same_group=true queue=max pending_capacity=100 pending_replacement=false_within_capacity=true cross_tag_parallelism=false cancel_in_progress=false",
+);
+console.log(
+    "CFS_STRICT_RELEASE_TAG_ADMISSION_CONTRACT_PASS strict_release_tag_admission=true stable_three_component_version=true leading_zero_rejected=true prerelease_rejected=true build_metadata_rejected=true wrong_component_prefix_rejected=true validation_before_environment_release_job=true validation_before_registry_mutation=true invalid_tag_registry_mutations=0 real_invalid_git_tags_created=0",
 );

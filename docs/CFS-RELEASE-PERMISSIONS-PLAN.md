@@ -1,53 +1,73 @@
 # CFS Web release permission plan
 
-Status: planning only — not applied. This document does not authorize a tag, release, package publication, environment, ruleset, or permission change.
+Status: **APPLIED AND READ-BACK VERIFIED ON 2026-09-03**.
 
-## Before
+This is a point-in-time permission snapshot. It does not authorize a tag, Release, package publication, Merge, deployment, or permission change. Authenticated API read-back is still required before every Merge and Release.
 
-- Repository ruleset `Protect cfs-web release tags` targets `refs/tags/cfs-web-v*`.
-- Enforcement is active.
-- It blocks tag update and deletion.
-- It has no bypass actors and does not restrict initial tag creation.
-- The release workflow has no configured GitHub Environment approval gate.
+## Historical state before R3
 
-## After proposal
+- `Protect cfs-web release tags` targeted `refs/tags/cfs-web-v*` and blocked update and deletion with no bypass actor.
+- Initial release-tag creation had no separate actor gate.
+- The Release Workflow had no configured GitHub Environment approval gate.
 
-Keep the existing update/deletion ruleset unchanged and add a separate creation-only ruleset for `refs/tags/cfs-web-v*`:
+## Applied state after R3
 
-- rule: block creation by default;
-- sole bypass actor: a dedicated organization team containing only the Job account;
-- boundary name: `Job-only release tag creator`;
-- do not grant that team bypass on the existing update/deletion ruleset;
-- require the tag target to equal the current protected `main` commit before the workflow performs any registry mutation.
+The Job-only release tag creator boundary is implemented with the organization Team:
 
-Create a protected GitHub Environment named `cfs-web-release` before enabling the release workflow:
+- display name: `CFS Release Tag Creators`;
+- slug: `cfs-release-tag-creators`;
+- Team ID: `19325995`;
+- privacy: `closed`;
+- parent: none;
+- sole member: `asiananlee` / user ID `248271261` / role `maintainer`;
+- repository assignments: `0`.
 
-- required reviewer: Job;
+The Web release gate is:
+
+- Environment: `cfs-web-release`;
+- required reviewer: `asiananlee` / user ID `248271261`;
 - prevent self-review: `false`;
-- reason: Job is currently both the sole tag creator and sole reviewer, so enabling prevent-self-review would permanently lock the release path;
-- deployment branch/tag policy limited to `cfs-web-v*`;
-- no long-lived registry or signing secret; use the run-scoped `GITHUB_TOKEN` and GitHub OIDC;
-- packages write and id-token write remain confined to the release job.
+- can admins bypass: `false`;
+- deployment branch policies: `0`;
+- sole deployment tag policy: `cfs-web-v*`;
+- Environment secrets: `0`;
+- Environment variables: `0`;
+- creation-only Ruleset: `Restrict cfs-web release tag creation` / ID `22177545`;
+- creation bypass: Team ID `19325995` only, mode `always`;
+- unchanged update/deletion Ruleset: `Protect cfs-web release tags` / ID `21900095`;
+- update/deletion bypass actors: `0`.
 
-The Draft Release Workflow now declares the exact source-level binding `environment.name: cfs-web-release`. This is a fail-closed prerequisite only: the Environment, reviewer policy, Team, creation Ruleset, and permissions have not been created or changed. They must be created and independently verified before this Draft PR may be merged.
+The Draft Release Workflow declares `environment.name: cfs-web-release`. Packages write and id-token write remain confined to the Environment-protected release job; the preceding tag-validation job has only `contents: read`.
 
-Formal-tag inspection is planned with `regctl v0.11.6` for linux/amd64, downloaded from the official release and pinned to SHA-256 `8e0e62a497fcdb8048d18aa927a139613176ba0531f412bc541044e28f9856bd`. The workflow must classify only explicit manifest-not-found/HTTP 404 as absent; every other inspect failure remains an error with zero formal writes.
+## Formal release tag admission
 
-Future separation-of-duties upgrade:
+The GitHub `cfs-web-v*` pattern is only a coarse namespace filter. The authoritative Formal Release admission is the Runtime exact regex:
+
+```text
+^cfs-web-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$
+```
+
+Phase 1 accepts only stable `MAJOR.MINOR.PATCH`. Prerelease suffixes, build metadata, extra components, leading zeroes, wrong case, wrong repository prefixes, whitespace, slash suffixes, and other trailing content fail closed. The run-scoped candidate tag remains the non-formal candidate identity.
+
+The protected tag target must equal the current protected `main` commit before any registry mutation. Formal-tag inspection uses `regctl v0.11.6` for linux/amd64, pinned to SHA-256 `8e0e62a497fcdb8048d18aa927a139613176ba0531f412bc541044e28f9856bd`. Only explicit manifest-not-found or HTTP 404 is absence; every other inspect failure is an error with zero formal writes.
+
+Because a malformed tag that matches the coarse Ruleset namespace may be protected against update and deletion, Job must manually check the exact stable three-component format before creating any release tag.
+
+## Future separation of duties
 
 - tag creator: Job;
 - Environment required reviewer: Future Technical Owner;
 - prevent self-review: `true`;
-- apply only after the Technical Owner role exists and a non-release dry run proves the approval path cannot lock out releases.
+- change only after the Technical Owner role exists and a non-release dry run proves the approval path cannot lock out releases.
 
 ## Risks and rollback
 
-- A creation ruleset without a valid bypass actor locks all release tag creation.
+- A creation Ruleset without a valid Team bypass locks release-tag creation.
 - A broad RepositoryRole or OrganizationAdmin bypass weakens the single-actor boundary.
 - Removing or renaming the Environment can strand an approved release after tag creation.
-- A final GHCR tag cannot be treated as rollback state unless its digest is recorded and verified.
-- Rollback uses a new, higher version tag that points to a newly reviewed protected-main commit; never update, delete, or force-move an existing release tag.
+- A final GHCR tag is not rollback state unless its digest is recorded and verified.
+- Rollback uses a new, higher stable version tag on a newly reviewed protected-main commit; never update, delete, or force-move an existing release tag.
 
 ## Break glass
 
-The organization owner may temporarily add the future Technical Owner to the dedicated creation-only team after recording an incident and an expiry time. The existing no-update/no-deletion ruleset stays active. Break glass never permits force push, tag rewrite, package overwrite, or bypass of the workflow main-commit, scan, signature, attestation, and digest verification gates.
+The organization owner may temporarily add the Future Technical Owner to the dedicated creation-only Team only after recording an incident and expiry time. The update/deletion Ruleset stays active. Break glass never permits force push, tag rewrite, package overwrite, or bypass of main-commit, scan, signature, attestation, digest, and strict tag-admission gates.

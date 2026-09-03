@@ -24,11 +24,49 @@ env:
     CFS_REGCTL_BIN: /tmp/cfs-regctl-v0.11.6
 
 jobs:
+    validate-release-tag:
+        runs-on: ubuntu-24.04
+        permissions:
+            contents: read
+        steps:
+            - name: Validate formal release tag before the Environment release job
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  release_pattern='^cfs-web-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+                  test "$GITHUB_REF_TYPE" = "tag"
+                  test "$GITHUB_REF" = "refs/tags/$GITHUB_REF_NAME"
+                  printf '%s' "$GITHUB_REF_NAME" | LC_ALL=C grep -Eq "$release_pattern"
     build-scan-publish:
+        needs: validate-release-tag
         runs-on: ubuntu-24.04
         environment:
             name: cfs-web-release
         steps:
+            - name: Revalidate formal release tag and record admission
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  release_pattern='^cfs-web-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+                  test "$GITHUB_REF_TYPE" = "tag"
+                  test "$GITHUB_REF" = "refs/tags/$GITHUB_REF_NAME"
+                  printf '%s' "$GITHUB_REF_NAME" | LC_ALL=C grep -Eq "$release_pattern"
+                  jq -n \
+                    --arg ref "$GITHUB_REF" \
+                    --arg ref_name "$GITHUB_REF_NAME" \
+                    --arg ref_type "$GITHUB_REF_TYPE" \
+                    --arg expected_pattern "$release_pattern" \
+                    '{
+                      ref: $ref,
+                      ref_name: $ref_name,
+                      ref_type: $ref_type,
+                      expected_pattern: $expected_pattern,
+                      stable_three_component_version: true,
+                      prerelease_allowed: false,
+                      build_metadata_allowed: false,
+                      registry_mutations_before_validation: 0
+                    }' > RELEASE-TAG-ADMISSION.json
+                  jq -e . RELEASE-TAG-ADMISSION.json >/dev/null
             - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
             - name: Install the pinned OCI tag inspector
               run: |
@@ -126,7 +164,7 @@ jobs:
                     }' > BUILD-PROVENANCE.json
                   jq -e . trivy.json sbom.spdx.json sbom.cyclonedx.json BUILD-PROVENANCE.json LOCAL-IMAGE-INSPECT.json >/dev/null
                   test "$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL" or .Severity == "HIGH")] | length' trivy.json)" = 0
-                  sha256sum trivy.json sbom.spdx.json sbom.cyclonedx.json BUILD-PROVENANCE.json BUILDKIT-METADATA.json LOCAL-IMAGE-INSPECT.json OCI-INSPECTOR.json > PREPUBLISH-SHA256SUMS.txt
+                  sha256sum trivy.json sbom.spdx.json sbom.cyclonedx.json BUILD-PROVENANCE.json BUILDKIT-METADATA.json LOCAL-IMAGE-INSPECT.json OCI-INSPECTOR.json RELEASE-TAG-ADMISSION.json > PREPUBLISH-SHA256SUMS.txt
             - name: Reverify protected main before any registry mutation
               run: |
                   git fetch --no-tags --depth=1 origin +refs/heads/main:refs/remotes/origin/main
@@ -192,6 +230,7 @@ jobs:
                       OCI-PROMOTION-SUMMARY.json
                       OCI-PROMOTION-TAG-METADATA.json
                       PREPUBLISH-SHA256SUMS.txt
+                      RELEASE-TAG-ADMISSION.json
                       RELEASE-SOURCE.json
                       sbom.cyclonedx.json
                       sbom.spdx.json
