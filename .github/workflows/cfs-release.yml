@@ -11,6 +11,7 @@ permissions:
 
 concurrency:
     group: cfs-web-immutable-release
+    queue: max
     cancel-in-progress: false
 
 env:

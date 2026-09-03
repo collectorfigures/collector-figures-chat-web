@@ -30,25 +30,47 @@ const integrationScript = readFileSync(
     "utf8",
 );
 const expectedConcurrencyGroup = "cfs-web-immutable-release";
-const releaseTagFixtures = ["cfs-web-v1.0.0", "cfs-web-v1.0.1"];
+const releaseTagFixtures = ["cfs-web-v1.0.0", "cfs-web-v1.0.1", "cfs-web-v1.0.2"];
 
 function verifyReleaseSingleFlight(source) {
     const match = source.match(
-        /^concurrency:\r?\n {4}group: ([^\r\n]+)\r?\n {4}cancel-in-progress: (true|false)\s*$/m,
+        /^concurrency:\r?\n {4}group: ([^\r\n]+)\r?\n {4}queue: ([^\r\n]+)\r?\n {4}cancel-in-progress: (true|false)\s*$/m,
     );
     assert.ok(match, "release concurrency must be a workflow-level block");
     assert.equal((source.match(/^concurrency:/gm) ?? []).length, 1);
     assert.ok(source.indexOf("concurrency:") < source.indexOf("jobs:"));
     assert.equal(match[1], expectedConcurrencyGroup);
-    assert.equal(match[2], "false");
+    assert.equal(match[2], "max");
+    assert.equal(match[3], "false");
+    assert.doesNotMatch(match[2], /\$\{\{/);
     assert.doesNotMatch(match[1], /\$\{\{|ref|ref_name|sha|run_id|run_attempt|version|tag/i);
 
     const mappedGroups = releaseTagFixtures.map(() => match[1]);
-    assert.deepEqual(mappedGroups, [expectedConcurrencyGroup, expectedConcurrencyGroup]);
+    assert.deepEqual(mappedGroups, [expectedConcurrencyGroup, expectedConcurrencyGroup, expectedConcurrencyGroup]);
     assert.equal(new Set(mappedGroups).size, 1);
 }
 
 verifyReleaseSingleFlight(workflow);
+const queueFixtures = [
+    workflow.replace("    queue: max\n", ""),
+    workflow.replace("    queue: max", "    queue: single"),
+    workflow.replace("    queue: max", "    queue: 1"),
+    workflow.replace("    queue: max", "    queue: true"),
+    workflow.replace("    queue: max", "    queue: ${{ inputs.queue }}"),
+    workflow.replace("    cancel-in-progress: false", "    cancel-in-progress: true"),
+];
+const jobOnlyConcurrencyFixture = workflow
+    .replace(
+        /^concurrency:\r?\n {4}group: [^\r\n]+\r?\n {4}queue: [^\r\n]+\r?\n {4}cancel-in-progress: [^\r\n]+\r?\n\r?\n/m,
+        "",
+    )
+    .replace(
+        /^jobs:\r?\n {4}build-scan-publish:/m,
+        `jobs:\n    build-scan-publish:\n        concurrency:\n            group: ${expectedConcurrencyGroup}\n            queue: max\n            cancel-in-progress: false`,
+    );
+for (const fixture of [...queueFixtures, jobOnlyConcurrencyFixture]) {
+    assert.throws(() => verifyReleaseSingleFlight(fixture));
+}
 for (const dynamicGroup of [
     "cfs-web-release-${{ github.ref_name }}",
     "cfs-web-release-${{ github.ref }}",
@@ -220,4 +242,7 @@ console.log(
 );
 console.log(
     "CFS_RELEASE_SINGLE_FLIGHT_CONTRACT_PASS release_single_flight=true different_version_tags_same_group=true cross_tag_parallelism=false cancel_in_progress=false group=cfs-web-immutable-release",
+);
+console.log(
+    "CFS_RELEASE_QUEUE_PRESERVATION_CONTRACT_PASS release_single_flight=true three_version_tags_same_group=true queue=max pending_capacity=100 pending_replacement=false_within_capacity=true cross_tag_parallelism=false cancel_in_progress=false",
 );
