@@ -59,12 +59,34 @@ function verifyStrictReleaseTagAdmission(source) {
 
     const validateBlock = source.slice(validateJobStart, releaseJobStart);
     const releaseBlock = source.slice(releaseJobStart);
-    const releaseAdmission = releaseBlock.indexOf("- name: Revalidate formal release tag and record admission");
-    const checkout = releaseBlock.indexOf("actions/checkout@");
+    const precheckoutValidation = releaseBlock.indexOf("- name: Revalidate formal release tag before checkout");
+    const checkout = releaseBlock.indexOf("- uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1");
+    const postcheckoutEvidence = releaseBlock.indexOf(
+        "- name: Revalidate and record formal release tag admission evidence",
+    );
+    const toolDownload = releaseBlock.indexOf("- name: Install the pinned OCI tag inspector");
+    const buildx = releaseBlock.indexOf("docker/setup-buildx-action@");
+    const dockerBuild = releaseBlock.indexOf("- name: Build exact source locally");
     const registryLogin = releaseBlock.indexOf("docker/login-action");
+    const cosign = releaseBlock.indexOf("sigstore/cosign-installer@");
+
+    assert.ok(
+        0 <= precheckoutValidation &&
+            precheckoutValidation < checkout &&
+            checkout < postcheckoutEvidence &&
+            postcheckoutEvidence < toolDownload &&
+            toolDownload < buildx &&
+            buildx < dockerBuild &&
+            dockerBuild < registryLogin &&
+            registryLogin < cosign,
+    );
+
+    const precheckoutBlock = releaseBlock.slice(precheckoutValidation, checkout);
+    const checkoutBlock = releaseBlock.slice(checkout, postcheckoutEvidence);
+    const postcheckoutBlock = releaseBlock.slice(postcheckoutEvidence, toolDownload);
 
     assert.match(source, /tags: \["cfs-web-v\*"\]/);
-    assert.equal(source.split(exactReleaseTagPatternText).length - 1, 2);
+    assert.equal(source.split(exactReleaseTagPatternText).length - 1, 3);
     assert.match(validateBlock, /runs-on: ubuntu-24\.04/);
     assert.match(validateBlock, /permissions:\r?\n {12}contents: read\r?\n {8}steps:/);
     assert.doesNotMatch(
@@ -74,14 +96,31 @@ function verifyStrictReleaseTagAdmission(source) {
     assert.match(validateBlock, /test "\$GITHUB_REF_TYPE" = "tag"/);
     assert.match(validateBlock, /test "\$GITHUB_REF" = "refs\/tags\/\$GITHUB_REF_NAME"/);
     assert.match(releaseBlock, /needs: validate-release-tag/);
-    assert.ok(releaseAdmission >= 0 && checkout > releaseAdmission && registryLogin > checkout);
-    assert.match(releaseBlock.slice(0, checkout), /RELEASE-TAG-ADMISSION\.json/);
-    assert.match(releaseBlock, /stable_three_component_version: true/);
-    assert.match(releaseBlock, /prerelease_allowed: false/);
-    assert.match(releaseBlock, /build_metadata_allowed: false/);
-    assert.match(releaseBlock, /registry_mutations_before_validation: 0/);
-    assert.match(releaseBlock, /RELEASE-TAG-ADMISSION\.json[\s\S]*PREPUBLISH-SHA256SUMS\.txt/);
-    assert.match(releaseBlock, /PREPUBLISH-SHA256SUMS\.txt\r?\n {22}RELEASE-TAG-ADMISSION\.json/);
+
+    assert.match(precheckoutBlock, /test "\$GITHUB_REF_TYPE" = "tag"/);
+    assert.match(precheckoutBlock, /test "\$GITHUB_REF" = "refs\/tags\/\$GITHUB_REF_NAME"/);
+    assert.ok(precheckoutBlock.includes(exactReleaseTagPatternText));
+    assert.doesNotMatch(precheckoutBlock, /RELEASE-TAG-ADMISSION|\.json|>\s*|\b(?:tee|touch|cp|mv)\b/);
+
+    assert.equal(checkoutBlock.trim(), "- uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1");
+    assert.doesNotMatch(checkoutBlock, /clean:\s*false|\bpath:/);
+
+    assert.match(postcheckoutBlock, /test "\$GITHUB_REF_TYPE" = "tag"/);
+    assert.match(postcheckoutBlock, /test "\$GITHUB_REF" = "refs\/tags\/\$GITHUB_REF_NAME"/);
+    assert.ok(postcheckoutBlock.includes(exactReleaseTagPatternText));
+    assert.match(postcheckoutBlock, /> RELEASE-TAG-ADMISSION\.json/);
+    assert.match(postcheckoutBlock, /jq -e \. RELEASE-TAG-ADMISSION\.json >\/dev\/null/);
+    assert.match(postcheckoutBlock, /test -f RELEASE-TAG-ADMISSION\.json/);
+    assert.match(postcheckoutBlock, /test ! -L RELEASE-TAG-ADMISSION\.json/);
+    assert.match(postcheckoutBlock, /stable_three_component_version: true/);
+    assert.match(postcheckoutBlock, /prerelease_allowed: false/);
+    assert.match(postcheckoutBlock, /build_metadata_allowed: false/);
+    assert.match(postcheckoutBlock, /registry_mutations_before_validation: 0/);
+
+    assert.match(releaseBlock, /sha256sum [^\r\n]*RELEASE-TAG-ADMISSION\.json > PREPUBLISH-SHA256SUMS\.txt/);
+    const artifactBlock = releaseBlock.slice(releaseBlock.indexOf("- name: Upload complete release evidence"));
+    assert.match(artifactBlock, /PREPUBLISH-SHA256SUMS\.txt\r?\n {22}RELEASE-TAG-ADMISSION\.json/);
+    assert.match(artifactBlock, /if-no-files-found: error/);
 }
 
 for (const tag of validReleaseTags) assert.equal(exactReleaseTagPattern.test(tag), true, tag);
@@ -91,15 +130,22 @@ verifyStrictReleaseTagAdmission(workflow);
 const validateJobStart = workflow.indexOf("    validate-release-tag:");
 const releaseJobStart = workflow.indexOf("    build-scan-publish:");
 const validateJobBlock = workflow.slice(validateJobStart, releaseJobStart);
-const releaseAdmissionStart = workflow.indexOf(
-    "            - name: Revalidate formal release tag and record admission",
-);
+const precheckoutStart = workflow.indexOf("            - name: Revalidate formal release tag before checkout");
 const checkoutStart = workflow.indexOf("            - uses: actions/checkout@");
-const releaseAdmissionBlock = workflow.slice(releaseAdmissionStart, checkoutStart);
+const postcheckoutStart = workflow.indexOf(
+    "            - name: Revalidate and record formal release tag admission evidence",
+);
+const toolDownloadStart = workflow.indexOf("            - name: Install the pinned OCI tag inspector");
+const sourceGateStart = workflow.indexOf("            - name: Verify release tag is the exact protected main commit");
+const precheckoutBlock = workflow.slice(precheckoutStart, checkoutStart);
+const checkoutBlock = workflow.slice(checkoutStart, postcheckoutStart);
+const postcheckoutBlock = workflow.slice(postcheckoutStart, toolDownloadStart);
+const toolDownloadBlock = workflow.slice(toolDownloadStart, sourceGateStart);
 const weakenedReleaseWorkflows = [
     workflow.replace(validateJobBlock, ""),
     workflow.replace("        needs: validate-release-tag\n", ""),
-    workflow.replace(releaseAdmissionBlock, ""),
+    workflow.replace(precheckoutBlock, ""),
+    workflow.replace(postcheckoutBlock, ""),
     workflow.split(exactReleaseTagPatternText).join("^cfs-web-v.*$"),
     workflow.split(exactReleaseTagPatternText).join("^cfs-web-v"),
     workflow.split(exactReleaseTagPatternText).join(String.raw`^cfs-web-v[0-9]+\.[0-9]+\.[0-9]+$`),
@@ -117,14 +163,46 @@ const weakenedReleaseWorkflows = [
         "        permissions:\n            contents: read\n        steps:",
         "        permissions:\n            contents: read\n            id-token: write\n        steps:",
     ),
+    workflow.replace(
+        precheckoutBlock,
+        precheckoutBlock.replace(
+            '                  printf \'%s\' "$GITHUB_REF_NAME" | LC_ALL=C grep -Eq "$release_pattern"\n',
+            "                  printf '%s' \"$GITHUB_REF_NAME\" | LC_ALL=C grep -Eq \"$release_pattern\"\n                  printf '{}' > RELEASE-TAG-ADMISSION.json\n",
+        ),
+    ),
+    workflow.replace(
+        postcheckoutBlock,
+        postcheckoutBlock.replace(`                  release_pattern='${exactReleaseTagPatternText}'\n`, ""),
+    ),
+    workflow.replace(postcheckoutBlock, "").replace(toolDownloadBlock, `${toolDownloadBlock}${postcheckoutBlock}`),
     workflow
-        .replace(releaseAdmissionBlock, "")
+        .replace(postcheckoutBlock, "")
+        .replace(
+            "            - name: Build exact source locally",
+            `${postcheckoutBlock}            - name: Build exact source locally`,
+        ),
+    workflow
+        .replace(postcheckoutBlock, "")
         .replace(
             "            - name: Publish only the run-scoped candidate tag",
-            `${releaseAdmissionBlock}            - name: Publish only the run-scoped candidate tag`,
+            `${postcheckoutBlock}            - name: Publish only the run-scoped candidate tag`,
         ),
+    workflow.replace(
+        checkoutBlock,
+        `${checkoutBlock.trimEnd()}\n              with:\n                  clean: false\n`,
+    ),
+    workflow.replace(
+        checkoutBlock,
+        `${checkoutBlock.trimEnd()}\n              with:\n                  path: release-source\n`,
+    ),
+    workflow.replace(" OCI-INSPECTOR.json RELEASE-TAG-ADMISSION.json >", " OCI-INSPECTOR.json >"),
+    workflow.replace("                      RELEASE-TAG-ADMISSION.json\n", ""),
+    workflow.replace("actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1", "actions/checkout@v4"),
 ];
-for (const fixture of weakenedReleaseWorkflows) assert.throws(() => verifyStrictReleaseTagAdmission(fixture));
+for (const fixture of weakenedReleaseWorkflows) {
+    assert.notEqual(fixture, workflow);
+    assert.throws(() => verifyStrictReleaseTagAdmission(fixture));
+}
 
 function verifyReleaseSingleFlight(source) {
     const match = source.match(
@@ -355,4 +433,7 @@ console.log(
 );
 console.log(
     "CFS_STRICT_RELEASE_TAG_ADMISSION_CONTRACT_PASS strict_release_tag_admission=true stable_three_component_version=true leading_zero_rejected=true prerelease_rejected=true build_metadata_rejected=true wrong_component_prefix_rejected=true validation_before_environment_release_job=true validation_before_registry_mutation=true invalid_tag_registry_mutations=0 real_invalid_git_tags_created=0",
+);
+console.log(
+    "CFS_RELEASE_ADMISSION_EVIDENCE_CHECKOUT_SURVIVAL_PASS precheckout_tag_revalidation=true precheckout_workspace_evidence_files=0 checkout_pinned=true checkout_clean_bypass=false postcheckout_tag_revalidation=true postcheckout_admission_evidence=true admission_evidence_before_tool_download=true admission_evidence_before_registry_mutation=true admission_evidence_in_checksum=true admission_evidence_in_artifact=true real_release_workflow_runs=0",
 );

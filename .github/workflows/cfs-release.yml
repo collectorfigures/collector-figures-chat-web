@@ -43,7 +43,16 @@ jobs:
         environment:
             name: cfs-web-release
         steps:
-            - name: Revalidate formal release tag and record admission
+            - name: Revalidate formal release tag before checkout
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  release_pattern='^cfs-web-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+                  test "$GITHUB_REF_TYPE" = "tag"
+                  test "$GITHUB_REF" = "refs/tags/$GITHUB_REF_NAME"
+                  printf '%s' "$GITHUB_REF_NAME" | LC_ALL=C grep -Eq "$release_pattern"
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+            - name: Revalidate and record formal release tag admission evidence
               shell: bash
               run: |
                   set -euo pipefail
@@ -67,7 +76,8 @@ jobs:
                       registry_mutations_before_validation: 0
                     }' > RELEASE-TAG-ADMISSION.json
                   jq -e . RELEASE-TAG-ADMISSION.json >/dev/null
-            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+                  test -f RELEASE-TAG-ADMISSION.json
+                  test ! -L RELEASE-TAG-ADMISSION.json
             - name: Install the pinned OCI tag inspector
               run: |
                   curl --fail --show-error --silent --location --proto '=https' --tlsv1.2 \
