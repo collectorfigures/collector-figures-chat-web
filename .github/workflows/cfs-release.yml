@@ -9,15 +9,98 @@ permissions:
     packages: write
     id-token: write
 
+concurrency:
+    group: cfs-web-immutable-release
+    queue: max
+    cancel-in-progress: false
+
 env:
     IMAGE: ghcr.io/collectorfigures/collector-figures-chat-web
     LOCAL_IMAGE: cfs-web-prepublish:${{ github.sha }}
+    CANDIDATE_TAG: candidate-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+    CERTIFICATE_IDENTITY: https://github.com/${{ github.repository }}/.github/workflows/cfs-release.yml@refs/tags/${{ github.ref_name }}
+    CFS_REGCTL_VERSION: v0.11.6
+    CFS_REGCTL_SHA256: 8e0e62a497fcdb8048d18aa927a139613176ba0531f412bc541044e28f9856bd
+    CFS_REGCTL_BIN: /tmp/cfs-regctl-v0.11.6
 
 jobs:
-    build-scan-publish:
+    validate-release-tag:
         runs-on: ubuntu-24.04
+        permissions:
+            contents: read
         steps:
+            - name: Validate formal release tag before the Environment release job
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  release_pattern='^cfs-web-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+                  test "$GITHUB_REF_TYPE" = "tag"
+                  test "$GITHUB_REF" = "refs/tags/$GITHUB_REF_NAME"
+                  printf '%s' "$GITHUB_REF_NAME" | LC_ALL=C grep -Eq "$release_pattern"
+    build-scan-publish:
+        needs: validate-release-tag
+        runs-on: ubuntu-24.04
+        environment:
+            name: cfs-web-release
+        steps:
+            - name: Revalidate formal release tag before checkout
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  release_pattern='^cfs-web-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+                  test "$GITHUB_REF_TYPE" = "tag"
+                  test "$GITHUB_REF" = "refs/tags/$GITHUB_REF_NAME"
+                  printf '%s' "$GITHUB_REF_NAME" | LC_ALL=C grep -Eq "$release_pattern"
             - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+            - name: Revalidate and record formal release tag admission evidence
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  release_pattern='^cfs-web-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+                  test "$GITHUB_REF_TYPE" = "tag"
+                  test "$GITHUB_REF" = "refs/tags/$GITHUB_REF_NAME"
+                  printf '%s' "$GITHUB_REF_NAME" | LC_ALL=C grep -Eq "$release_pattern"
+                  jq -n \
+                    --arg ref "$GITHUB_REF" \
+                    --arg ref_name "$GITHUB_REF_NAME" \
+                    --arg ref_type "$GITHUB_REF_TYPE" \
+                    --arg expected_pattern "$release_pattern" \
+                    '{
+                      ref: $ref,
+                      ref_name: $ref_name,
+                      ref_type: $ref_type,
+                      expected_pattern: $expected_pattern,
+                      stable_three_component_version: true,
+                      prerelease_allowed: false,
+                      build_metadata_allowed: false,
+                      registry_mutations_before_validation: 0
+                    }' > RELEASE-TAG-ADMISSION.json
+                  jq -e . RELEASE-TAG-ADMISSION.json >/dev/null
+                  test -f RELEASE-TAG-ADMISSION.json
+                  test ! -L RELEASE-TAG-ADMISSION.json
+            - name: Install the pinned OCI tag inspector
+              run: |
+                  curl --fail --show-error --silent --location --proto '=https' --tlsv1.2 \
+                    --output "$CFS_REGCTL_BIN" \
+                    "https://github.com/regclient/regclient/releases/download/$CFS_REGCTL_VERSION/regctl-linux-amd64"
+                  printf '%s  %s\n' "$CFS_REGCTL_SHA256" "$CFS_REGCTL_BIN" | sha256sum -c -
+                  chmod 0755 "$CFS_REGCTL_BIN"
+                  test "$("$CFS_REGCTL_BIN" version --format '{{.VCSTag}}')" = "$CFS_REGCTL_VERSION"
+                  jq -n --arg version "$CFS_REGCTL_VERSION" --arg sha256 "$CFS_REGCTL_SHA256" \
+                    '{tool: "regctl-linux-amd64", version: $version, sha256: $sha256}' > OCI-INSPECTOR.json
+            - name: Verify release tag is the exact protected main commit
+              run: |
+                  git fetch --no-tags --depth=1 origin +refs/heads/main:refs/remotes/origin/main
+                  tag_commit="$(git rev-parse "$GITHUB_SHA^{commit}")"
+                  main_commit="$(git rev-parse 'refs/remotes/origin/main^{commit}')"
+                  test "$tag_commit" = "$GITHUB_SHA"
+                  test "$tag_commit" = "$main_commit"
+                  jq -n \
+                    --arg tag_ref "refs/tags/$GITHUB_REF_NAME" \
+                    --arg tag_commit "$tag_commit" \
+                    --arg protected_main_commit "$main_commit" \
+                    '{tag_ref: $tag_ref, tag_commit: $tag_commit, protected_main_commit: $protected_main_commit}' \
+                    > RELEASE-SOURCE.json
             - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
             - name: Build exact source locally
               id: build
@@ -91,34 +174,49 @@ jobs:
                     }' > BUILD-PROVENANCE.json
                   jq -e . trivy.json sbom.spdx.json sbom.cyclonedx.json BUILD-PROVENANCE.json LOCAL-IMAGE-INSPECT.json >/dev/null
                   test "$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL" or .Severity == "HIGH")] | length' trivy.json)" = 0
-                  sha256sum trivy.json sbom.spdx.json sbom.cyclonedx.json BUILD-PROVENANCE.json BUILDKIT-METADATA.json LOCAL-IMAGE-INSPECT.json > PREPUBLISH-SHA256SUMS.txt
+                  sha256sum trivy.json sbom.spdx.json sbom.cyclonedx.json BUILD-PROVENANCE.json BUILDKIT-METADATA.json LOCAL-IMAGE-INSPECT.json OCI-INSPECTOR.json RELEASE-TAG-ADMISSION.json > PREPUBLISH-SHA256SUMS.txt
+            - name: Reverify protected main before any registry mutation
+              run: |
+                  git fetch --no-tags --depth=1 origin +refs/heads/main:refs/remotes/origin/main
+                  test "$(git rev-parse 'refs/remotes/origin/main^{commit}')" = "$GITHUB_SHA"
             - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
               with:
                   registry: ghcr.io
                   username: ${{ github.actor }}
                   password: ${{ secrets.GITHUB_TOKEN }}
-            - name: Publish the already-scanned local image
+            - name: Publish only the run-scoped candidate tag
               run: |
-                  docker tag "$LOCAL_IMAGE" "$IMAGE:$GITHUB_REF_NAME"
-                  docker tag "$LOCAL_IMAGE" "$IMAGE:sha-$GITHUB_SHA"
-                  docker push "$IMAGE:$GITHUB_REF_NAME"
-                  docker push "$IMAGE:sha-$GITHUB_SHA"
-                  docker buildx imagetools inspect --raw "$IMAGE:$GITHUB_REF_NAME" > OCI-MANIFEST-TAG.json
-                  docker buildx imagetools inspect --raw "$IMAGE:sha-$GITHUB_SHA" > OCI-MANIFEST-SHA.json
-                  tag_digest="sha256:$(sha256sum OCI-MANIFEST-TAG.json | cut -d' ' -f1)"
-                  sha_digest="sha256:$(sha256sum OCI-MANIFEST-SHA.json | cut -d' ' -f1)"
-                  test "$tag_digest" = "$sha_digest"
-                  printf '%s  %s\n' "$tag_digest" "$IMAGE" > OCI-DIGEST.txt
+                  docker tag "$LOCAL_IMAGE" "$IMAGE:$CANDIDATE_TAG"
+                  docker push "$IMAGE:$CANDIDATE_TAG"
+                  docker buildx imagetools inspect --raw "$IMAGE:$CANDIDATE_TAG" > OCI-MANIFEST-CANDIDATE.json
+                  candidate_digest="sha256:$(sha256sum OCI-MANIFEST-CANDIDATE.json | cut -d' ' -f1)"
+                  test "${#candidate_digest}" -eq 71
+                  printf '%s' "$candidate_digest" | LC_ALL=C grep -Eq '^sha256:[0-9a-f]{64}$'
+                  printf '%s  %s\n' "$candidate_digest" "$IMAGE" > OCI-DIGEST.txt
             - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
-            - name: Sign and attest the immutable digest
+            - name: Sign, attest and verify the candidate digest
               run: |
                   digest="$(cut -d' ' -f1 OCI-DIGEST.txt)"
+                  test "${#digest}" -eq 71
+                  printf '%s' "$digest" | LC_ALL=C grep -Eq '^sha256:[0-9a-f]{64}$'
                   cosign sign --yes "$IMAGE@$digest"
                   cosign attest --yes --type slsaprovenance --predicate BUILD-PROVENANCE.json "$IMAGE@$digest"
-                  cosign verify "$IMAGE@$digest" --certificate-identity-regexp "^https://github.com/${GITHUB_REPOSITORY}/" --certificate-oidc-issuer "https://token.actions.githubusercontent.com" > COSIGN-VERIFY.json
-                  cosign verify-attestation --type slsaprovenance "$IMAGE@$digest" --certificate-identity-regexp "^https://github.com/${GITHUB_REPOSITORY}/" --certificate-oidc-issuer "https://token.actions.githubusercontent.com" > COSIGN-ATTESTATION-VERIFY.json
+                  cosign verify "$IMAGE@$digest" --certificate-identity "$CERTIFICATE_IDENTITY" --certificate-oidc-issuer "https://token.actions.githubusercontent.com" > COSIGN-VERIFY.json
+                  cosign verify-attestation --type slsaprovenance "$IMAGE@$digest" --certificate-identity "$CERTIFICATE_IDENTITY" --certificate-oidc-issuer "https://token.actions.githubusercontent.com" > COSIGN-ATTESTATION-VERIFY.json
                   jq -e . COSIGN-VERIFY.json COSIGN-ATTESTATION-VERIFY.json >/dev/null
-                  sha256sum OCI-DIGEST.txt OCI-MANIFEST-TAG.json OCI-MANIFEST-SHA.json COSIGN-VERIFY.json COSIGN-ATTESTATION-VERIFY.json >> PREPUBLISH-SHA256SUMS.txt
+                  sha256sum OCI-DIGEST.txt OCI-MANIFEST-CANDIDATE.json COSIGN-VERIFY.json COSIGN-ATTESTATION-VERIFY.json >> PREPUBLISH-SHA256SUMS.txt
+            - name: Reverify protected main before formal tag promotion
+              run: |
+                  git fetch --no-tags --depth=1 origin +refs/heads/main:refs/remotes/origin/main
+                  test "$(git rev-parse 'refs/remotes/origin/main^{commit}')" = "$GITHUB_SHA"
+            - name: Promote the verified digest without overwriting formal tags
+              run: |
+                  digest="$(cut -d' ' -f1 OCI-DIGEST.txt)"
+                  test "${#digest}" -eq 71
+                  printf '%s' "$digest" | LC_ALL=C grep -Eq '^sha256:[0-9a-f]{64}$'
+                  bash scripts/cfs-promote-oci-tag.sh \
+                    "$IMAGE" "$GITHUB_REF_NAME" "sha-$GITHUB_SHA" "$digest" .
+                  sha256sum OCI-INSPECT-SHA.json OCI-INSPECT-VERSION.json OCI-MANIFEST-TAG.json OCI-MANIFEST-SHA.json OCI-PROMOTION-TAG-METADATA.json OCI-PROMOTION-SHA-METADATA.json OCI-PROMOTION-SUMMARY.json >> PREPUBLISH-SHA256SUMS.txt
             - name: Upload complete release evidence
               if: always()
               uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -132,9 +230,18 @@ jobs:
                       LOCAL-IMAGE-INSPECT.json
                       LOCAL-IMAGE-SHA256.txt
                       OCI-DIGEST.txt
+                      OCI-INSPECT-SHA.json
+                      OCI-INSPECT-VERSION.json
+                      OCI-INSPECTOR.json
+                      OCI-MANIFEST-CANDIDATE.json
                       OCI-MANIFEST-SHA.json
                       OCI-MANIFEST-TAG.json
+                      OCI-PROMOTION-SHA-METADATA.json
+                      OCI-PROMOTION-SUMMARY.json
+                      OCI-PROMOTION-TAG-METADATA.json
                       PREPUBLISH-SHA256SUMS.txt
+                      RELEASE-TAG-ADMISSION.json
+                      RELEASE-SOURCE.json
                       sbom.cyclonedx.json
                       sbom.spdx.json
                       trivy.json

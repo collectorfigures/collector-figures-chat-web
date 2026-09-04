@@ -24,7 +24,8 @@ RUN --mount=type=bind,source=.git,target=/src/.git /src/scripts/docker-link-repo
 
 # Build
 COPY --link --exclude=.git --exclude=apps/web/docker . /src
-RUN --mount=type=bind,source=.git,target=/src/.git /src/scripts/docker-package.sh
+ARG CFS_DOCKER_DIST_VERSION=""
+RUN --mount=type=bind,source=.git,target=/src/.git CFS_DOCKER_DIST_VERSION="${CFS_DOCKER_DIST_VERSION}" /src/scripts/docker-package.sh
 
 # Copy the config now so that we don't create another layer in the app image
 RUN cp /src/apps/web/config.cfs.production.json /src/apps/web/webapp/config.json
@@ -41,8 +42,9 @@ LABEL org.opencontainers.image.title="Collector Figures Chat Web/PWA" \
 # Need root user to install packages & manipulate the usr directory
 USER root
 
-# Install jq and moreutils for sponge, both used by our entrypoints
-RUN apk add jq moreutils
+# Exact Alpine v3.24 package versions used by this immutable base.
+# Source: https://dl-cdn.alpinelinux.org/alpine/v3.24/{main,community}/x86_64/APKINDEX.tar.gz
+RUN apk add --no-cache jq=1.8.2-r0 moreutils=0.70-r1
 
 COPY --from=builder /src/apps/web/webapp /app
 
@@ -87,7 +89,9 @@ ADD --checksum=sha256:27b0d0d9d803c41855aa94f02493ce214321f8d0c65af500d85875a3ef
     /tmp/modules/widget-toggles.zip
 
 # Unpack the modules
-RUN apk add --no-cache unzip && \
+# Exact Alpine v3.22 package version used by this immutable modules base.
+# Source: https://dl-cdn.alpinelinux.org/alpine/v3.22/main/x86_64/APKINDEX.tar.gz
+RUN apk add --no-cache unzip=6.0-r15 && \
     for archive in /tmp/modules/*.zip; do \
         name=$(basename "$archive" .zip); \
         mkdir -p "/modules/$name" && unzip -q "$archive" -d "/modules/$name"; \

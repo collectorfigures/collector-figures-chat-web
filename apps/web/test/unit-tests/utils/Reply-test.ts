@@ -133,6 +133,38 @@ But this is not
             `).trim(),
             ).toBe("But this is not");
         });
+
+        it.each(["javascript:alert(1)", "vbscript:msgbox(1)", "data:text/html,<script>alert(1)</script>"])(
+            "removes the dangerous %s URL scheme from reply fallback HTML",
+            (dangerousUrl) => {
+                const output = stripHTMLReply(`<a href="${dangerousUrl}">link</a>`);
+
+                expect(output).toBe("<a>link</a>");
+                expect(output).not.toMatch(/(?:javascript|vbscript|data):/i);
+            },
+        );
+
+        it.each([
+            '<svg><a><animate attributeName="href" values="#safe;javascript:alert(1)" dur=".01s" fill="freeze"></animate><text>Click me</text></a></svg>',
+            '<svg><a><set attributeName="xlink:href" to="javascript:alert(1)"></set><text>Click me</text></a></svg>',
+            '<svg><a><animate attributeName="href" from="#safe" to="javascript:alert(1)"></animate><text>Click me</text></a></svg>',
+        ])("blocks GHSA-g8qq-57p8-ggw5 SVG URI-list execution paths", (payload) => {
+            const output = stripHTMLReply(payload);
+
+            expect(output).toContain("Click me");
+            expect(output).not.toMatch(/javascript:/i);
+        });
+
+        it("keeps non-URL SVG animation and normal reply fallback content compatible", () => {
+            const output = stripHTMLReply(
+                '<mx-reply>quoted</mx-reply><svg><animate attributeName="fill" values="#fff;#000"></animate></svg><b>Reply</b>',
+            );
+
+            expect(output).not.toContain("quoted");
+            expect(output).toContain('attributename="fill"');
+            expect(output).toContain("#fff;#000");
+            expect(output).toContain("<b>Reply</b>");
+        });
     });
 
     describe("shouldDisplayReply", () => {

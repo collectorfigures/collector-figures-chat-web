@@ -48,6 +48,23 @@ describe("topicToHtml", () => {
 });
 
 describe("bodyToHtml", () => {
+    it("blocks dangerous SVG animation URLs after stripping reply fallback HTML", () => {
+        const html = bodyToHtml(
+            {
+                body: "> quoted\n\nClick me",
+                msgtype: "m.text",
+                formatted_body:
+                    '<mx-reply>quoted</mx-reply><svg><a><animate attributeName="href" values="#safe;javascript:alert(1)"></animate><text>Click me</text></a></svg>',
+                format: "org.matrix.custom.html",
+            },
+            [],
+            { stripReplyFallback: true },
+        );
+
+        expect(html).toContain("Click me");
+        expect(html).not.toMatch(/javascript:/i);
+    });
+
     it("should apply highlights to HTML messages", () => {
         const html = bodyToHtml(
             {

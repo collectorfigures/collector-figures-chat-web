@@ -9,14 +9,31 @@ on:
 permissions:
     contents: read
 
+env:
+    CFS_CI_IMAGE: cfs-web-ci:${{ github.sha }}
+    CFS_REGCTL_VERSION: v0.11.6
+    CFS_REGCTL_SHA256: 8e0e62a497fcdb8048d18aa927a139613176ba0531f412bc541044e28f9856bd
+    CFS_REGCTL_BIN: /tmp/cfs-regctl-v0.11.6
+
 jobs:
     verify:
         runs-on: ubuntu-24.04
         steps:
             - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  fetch-depth: 0
             - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
               with:
                   node-version: "24"
+            - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+            - name: Install the pinned OCI tag inspector
+              run: |
+                  curl --fail --show-error --silent --location --proto '=https' --tlsv1.2 \
+                    --output "$CFS_REGCTL_BIN" \
+                    "https://github.com/regclient/regclient/releases/download/$CFS_REGCTL_VERSION/regctl-linux-amd64"
+                  printf '%s  %s\n' "$CFS_REGCTL_SHA256" "$CFS_REGCTL_BIN" | sha256sum -c -
+                  chmod 0755 "$CFS_REGCTL_BIN"
+                  test "$("$CFS_REGCTL_BIN" version --format '{{.VCSTag}}')" = "$CFS_REGCTL_VERSION"
             - name: Install the locked package manager
               run: |
                   corepack enable
@@ -43,6 +60,14 @@ jobs:
                   src/hooks/useNotificationSettings.test.ts
                   src/utils/Feedback.test.ts
                   src/vector/rageshakesetup.test.ts
+            - name: Run sanitize-html reply and display regressions
+              run: >-
+                  pnpm --dir apps/web exec jest
+                  --runTestsByPath
+                  test/unit-tests/utils/Reply-test.ts
+                  test/unit-tests/HtmlUtils-test.tsx
+                  test/unit-tests/stores/message-preview/previews/MessageEventPreview-test.ts
+                  --runInBand
             - name: Lint CFS source
               run: >-
                   pnpm exec oxlint
@@ -79,3 +104,43 @@ jobs:
                   grep -q 'notificationclick' apps/web/webapp/cfs-push/sw.js
                   ! grep -Eqi 'access[_-]?token|MatrixClient|indexedDB|getAuthData' apps/web/webapp/cfs-push/sw.js apps/web/webapp/cfs-push/sw.js.map
                   ! grep -Eqi 'access[_-]?token|Authorization|Bearer|idbLoad|tryDecryptToken|getAuthData|pickleKey|media/v3' apps/web/webapp/sw.js apps/web/webapp/sw.js.map
+            - name: Build the complete Web image locally without publication
+              uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+              with:
+                  context: .
+                  file: apps/web/Dockerfile
+                  platforms: linux/amd64
+                  load: true
+                  push: false
+                  tags: ${{ env.CFS_CI_IMAGE }}
+                  build-args: |
+                      CFS_SOURCE_COMMIT=${{ github.sha }}
+                      CFS_DOCKER_DIST_VERSION=v0.0.0-cfs-ci.${{ github.run_id }}.${{ github.run_attempt }}
+                  provenance: false
+                  sbom: false
+            - name: Verify the local Web image contract
+              run: |
+                  user="$(docker image inspect "$CFS_CI_IMAGE" --format '{{.Config.User}}')"
+                  test -n "$user"
+                  test "$user" != "0"
+                  test "$user" != "root"
+                  test "$(docker image inspect "$CFS_CI_IMAGE" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" = "$GITHUB_SHA"
+                  test "$(docker image inspect "$CFS_CI_IMAGE" --format '{{.Os}}/{{.Architecture}}')" = "linux/amd64"
+                  test "$(docker image inspect "$CFS_CI_IMAGE" --format '{{json .Config.Healthcheck.Test}}')" != "null"
+                  docker run --rm --entrypoint /sbin/apk "$CFS_CI_IMAGE" info -v > CFS-WEB-APK-VERSIONS.txt
+                  grep -qx 'jq-1.8.2-r0' CFS-WEB-APK-VERSIONS.txt
+                  grep -qx 'moreutils-0.70-r1' CFS-WEB-APK-VERSIONS.txt
+                  printf 'CFS_WEB_LOCAL_DOCKER_BUILD_PASS platform=linux/amd64 nonroot=true revision=%s healthcheck=true jq=1.8.2-r0 moreutils=0.70-r1 publication=0\n' "$GITHUB_SHA"
+            - name: Test digest-preserving promotion in a local Registry
+              run: bash scripts/cfs-test-local-registry-promotion.sh "$CFS_CI_IMAGE"
+            - name: Verify focused secret scan and range diff
+              env:
+                  PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+              run: |
+                  node scripts/cfs-verify-release-workflow.mjs | tee CFS-PREFLIGHT-SECRET-SCAN.txt
+                  grep -q 'actual_credentials=0' CFS-PREFLIGHT-SECRET-SCAN.txt
+                  if [ -n "$PR_BASE_SHA" ]; then
+                    git diff --check "$PR_BASE_SHA...$GITHUB_SHA"
+                  else
+                    git diff --check "$GITHUB_SHA^...$GITHUB_SHA"
+                  fi
