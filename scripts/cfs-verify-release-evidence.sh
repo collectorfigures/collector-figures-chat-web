@@ -51,16 +51,27 @@ jq -e --arg sha "$GITHUB_SHA" '
   type=="array" and length==1 and .[0].Os=="linux" and .[0].Architecture=="amd64"
   and .[0].Config.Labels["org.opencontainers.image.revision"]==$sha
 ' LOCAL-IMAGE-INSPECT.json > /dev/null
-config_digest="$(jq -r '.[0].ImageManifestDescriptor.annotations["config.digest"] // .[0].Id' LOCAL-IMAGE-INSPECT.json)"
-digest "$config_digest"
 test "$(docker image inspect "$LOCAL_IMAGE" | jq -r '.[0].Id')" = "$(jq -r '.[0].Id' LOCAL-IMAGE-INSPECT.json)"
 config_path="$(tar -xOf LOCAL-IMAGE.tar manifest.json | jq -er 'select(type=="array" and length==1) | .[0].Config')"
 [[ "$config_path" =~ ^(blobs/sha256/)?[0-9a-f]{64}(\.json)?$ ]]
-test "sha256:$(tar -xOf LOCAL-IMAGE.tar "$config_path" | sha256sum | cut -d' ' -f1)" = "$config_digest"
+config_digest="sha256:$(tar -xOf LOCAL-IMAGE.tar "$config_path" | sha256sum | cut -d' ' -f1)"
+digest "$config_digest"
 tar -xOf LOCAL-IMAGE.tar "$config_path" | jq -e --arg sha "$GITHUB_SHA" '
  .os=="linux" and .architecture=="amd64" and .config.Labels["org.opencontainers.image.revision"]==$sha
 ' > /dev/null
-jq -e --arg config "$config_digest" '.["containerimage.config.digest"]==$config' BUILDKIT-METADATA.json > /dev/null
+metadata_config="$(jq -r '.["containerimage.config.digest"] // empty' BUILDKIT-METADATA.json)"
+if [[ -n "$metadata_config" ]]; then
+  digest "$metadata_config"; test "$metadata_config" = "$config_digest"
+else
+  # The Docker containerd image store reports a manifest Id, not a config Id.
+  # BuildKit's OCI descriptor must be present in the saved tar and bind its config.
+  local_manifest="$(jq -er '.["containerimage.digest"] | strings' BUILDKIT-METADATA.json)"
+  digest "$local_manifest"
+  jq -e --arg manifest "$local_manifest" '.["containerimage.descriptor"].digest==$manifest' BUILDKIT-METADATA.json > /dev/null
+  manifest_path="blobs/sha256/${local_manifest#sha256:}"
+  test "sha256:$(tar -xOf LOCAL-IMAGE.tar "$manifest_path" | sha256sum | cut -d' ' -f1)" = "$local_manifest"
+  tar -xOf LOCAL-IMAGE.tar "$manifest_path" | jq -e --arg config "$config_digest" '.schemaVersion==2 and .config.digest==$config' > /dev/null
+fi
 jq -e --arg config "$config_digest" '
  .ArtifactType=="container_image" and .Metadata.ImageID==$config and (.Results|type)=="array"
  and ([.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL" or .Severity=="HIGH")] | length)==0
