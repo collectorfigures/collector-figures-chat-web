@@ -25,7 +25,7 @@ describe("CFS Web Push two-page mutation campaign", () => {
     let activeSubscription: PushSubscription | null;
     let pauseNextActiveOwnerWrite = false;
     let releaseActiveOwnerWrite: (() => void) | undefined;
-    let stateLockTail: Promise<void> = Promise.resolve();
+    const lockTails = new Map<string, Promise<void>>();
     const cacheEntries = new Map<string, Response>();
     const unsubscribe = vi.fn(async () => {
         activeSubscription = null;
@@ -108,7 +108,7 @@ describe("CFS Web Push two-page mutation campaign", () => {
         cacheEntries.clear();
         pauseNextActiveOwnerWrite = false;
         releaseActiveOwnerWrite = undefined;
-        stateLockTail = Promise.resolve();
+        lockTails.clear();
         pushKey = "tab-a-p256dh";
         activeSubscription = null;
         unsubscribe.mockReset().mockImplementation(async () => {
@@ -132,12 +132,15 @@ describe("CFS Web Push two-page mutation campaign", () => {
             serviceWorker,
             language: "en-US",
             locks: {
-                request: vi.fn(async (_name: string, _options: LockOptions, callback: () => Promise<unknown>) => {
-                    const previous = stateLockTail;
+                request: vi.fn(async (name: string, _options: LockOptions, callback: () => Promise<unknown>) => {
+                    const previous = lockTails.get(name) ?? Promise.resolve();
                     let release!: () => void;
-                    stateLockTail = new Promise<void>((resolve) => {
-                        release = resolve;
-                    });
+                    lockTails.set(
+                        name,
+                        new Promise<void>((resolve) => {
+                            release = resolve;
+                        }),
+                    );
                     await previous;
                     try {
                         return await callback();
@@ -191,11 +194,13 @@ describe("CFS Web Push two-page mutation campaign", () => {
         await vi.waitFor(() => expect(setPusherA).toHaveBeenCalledTimes(2));
 
         const tabB = await loadPageRealm();
-        tabB.supersedeCfsWebPushMutationForSessionLock();
-        await tabB.disableCfsWebPush(accountA);
+        await tabB.supersedeCfsWebPushMutationForSessionLock();
+        const disabling = tabB.disableCfsWebPush(accountA);
+        await vi.waitFor(async () => expect(await activeOwner()).toBeUndefined());
         resolvePending();
 
         await expect(pendingEnsure).rejects.toThrow("superseded");
+        await disabling;
         expect(localStorage.getItem("cfs_webpush_enrollment_v1")).toBeNull();
         expect(localStorage.getItem("cfs_webpush_registration_v1")).toBeNull();
         await expect(activeOwner()).resolves.toBeUndefined();
@@ -236,7 +241,11 @@ describe("CFS Web Push two-page mutation campaign", () => {
         await vi.waitFor(() => expect(setPusherA).toHaveBeenCalledTimes(2));
 
         const tabB = await loadPageRealm();
-        await tabB.prepareCfsWebPushForAccountReplacement(accountA);
+        const replacing = tabB.prepareCfsWebPushForAccountReplacement(accountA);
+        await vi.waitFor(async () => expect(await activeOwner()).toBeUndefined());
+        resolvePending();
+        await expect(pendingA).rejects.toThrow("superseded");
+        await replacing;
         pushKey = "tab-b-p256dh";
         const setPusherB = vi.fn().mockResolvedValue(undefined);
         const accountB = makeClient({
@@ -247,9 +256,6 @@ describe("CFS Web Push two-page mutation campaign", () => {
         });
         await tabB.enableCfsWebPush(accountB, true);
         const accountBOwner = await activeOwner();
-        resolvePending();
-
-        await expect(pendingA).rejects.toThrow("superseded");
         expect(accountBOwner).toMatch(/^[A-Za-z0-9_-]{22}$/);
         await expect(activeOwner()).resolves.toBe(accountBOwner);
         const stored = JSON.parse(localStorage.getItem("cfs_webpush_registration_v1")!);

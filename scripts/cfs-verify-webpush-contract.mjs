@@ -25,23 +25,22 @@ const [
     webPlatform,
     indexPage,
     helpPage,
-] =
-    await Promise.all([
-        read("apps/web/res/manifest.json"),
-        read("apps/web/config.cfs.production.json"),
-        read("apps/web/src/cfs-webpush/fixtures/cfs-webpush-endpoints.json"),
-        read("apps/web/src/cfs-webpush/CfsWebPushManager.ts"),
-        read("apps/web/src/cfs-webpush/mutationCoordinator.ts"),
-        read("apps/web/src/cfs-webpush/CfsWebPushCrossTab.test.ts"),
-        read("apps/web/src/cfs-webpush/serviceworker.ts"),
-        read("apps/web/src/cfs-webpush/payload.ts"),
-        read("apps/web/src/cfs-webpush/notificationGate.ts"),
-        read("apps/web/src/serviceworker/index.ts"),
-        read("apps/web/src/Lifecycle.ts"),
-        read("apps/web/src/vector/platform/WebPlatform.ts"),
-        read("apps/web/src/vector/index.html"),
-        read("apps/web/res/cfs-help/index.html"),
-    ]);
+] = await Promise.all([
+    read("apps/web/res/manifest.json"),
+    read("apps/web/config.cfs.production.json"),
+    read("apps/web/src/cfs-webpush/fixtures/cfs-webpush-endpoints.json"),
+    read("apps/web/src/cfs-webpush/CfsWebPushManager.ts"),
+    read("apps/web/src/cfs-webpush/mutationCoordinator.ts"),
+    read("apps/web/src/cfs-webpush/CfsWebPushCrossTab.test.ts"),
+    read("apps/web/src/cfs-webpush/serviceworker.ts"),
+    read("apps/web/src/cfs-webpush/payload.ts"),
+    read("apps/web/src/cfs-webpush/notificationGate.ts"),
+    read("apps/web/src/serviceworker/index.ts"),
+    read("apps/web/src/Lifecycle.ts"),
+    read("apps/web/src/vector/platform/WebPlatform.ts"),
+    read("apps/web/src/vector/index.html"),
+    read("apps/web/res/cfs-help/index.html"),
+]);
 
 const manifest = JSON.parse(manifestText);
 const config = JSON.parse(configText);
@@ -88,13 +87,13 @@ assert.equal(endpointFixtures.fixture_values, "synthetic_redactions");
 assert.equal(endpointFixtures.real_browser_acceptance, false);
 assert.equal(endpointFixtures.safari_status, "fail_closed_pending_real_acceptance");
 assert.equal(endpointFixtures.valid.length, 5);
-assert.equal(endpointFixtures.invalid.length, 12);
+assert.equal(endpointFixtures.invalid.length, 14);
 assert.deepEqual(Object.keys(endpointFixtures.provenance).sort(), ["chrome", "edge", "firefox"]);
 assert.equal(endpointFixtures.provenance.chrome.redacted_shape, "https://fcm.googleapis.com/wp/<opaque>");
 assert.equal(endpointFixtures.provenance.edge.validation_boundary, "https_host_suffix_only_black_box_path_query");
 assert.equal(
     createHash("sha256").update(endpointFixturesText).digest("hex"),
-    "9999f3e68b1bba37355fccd5231c8026a679d7550bff1cd7359c97eabcb4aab6",
+    "fc31247bd2219a9c7a7432ce7f41fd9ddef4a0c43ef337fb71f1743e454682be",
 );
 assert.match(webPlatform, /isCfsWebPushEnrollmentEnabledForClient/);
 assert.ok(
@@ -114,9 +113,7 @@ assert.doesNotMatch(pushPayload, /room_name|sender|content|email|matrix_id|mxid/
 assert.match(pushPayload, /\^\[A-Za-z0-9_-\]\{22\}\$/);
 assert.match(notificationGate, /isCfsPushForActiveOwner/);
 assert.match(notificationGate, /cfsNotificationClickTarget/);
-assert.ok(
-    notificationGate.indexOf("isCfsPushForActiveOwner") < notificationGate.indexOf("showNotification("),
-);
+assert.ok(notificationGate.indexOf("isCfsPushForActiveOwner") < notificationGate.indexOf("showNotification("));
 assert.match(manager, /ACTIVE_OWNER_PATH/);
 assert.match(manager, /publishCfsWebPushMutation/);
 assert.match(manager, /waitForCurrentCfsWebPushMutation/);
@@ -159,8 +156,14 @@ const notificationClickHandler = pushWorker.slice(
     pushWorker.indexOf('worker.addEventListener("notificationclick"'),
     pushWorker.indexOf('worker.addEventListener("pushsubscriptionchange"'),
 );
-assert.ok(notificationClickHandler.indexOf("await readActiveOwner()") < notificationClickHandler.indexOf("cfsNotificationClickTarget"));
-assert.ok(notificationClickHandler.indexOf("cfsNotificationClickTarget") < notificationClickHandler.indexOf("worker.clients.matchAll"));
+assert.ok(
+    notificationClickHandler.indexOf("await readActiveOwner()") <
+        notificationClickHandler.indexOf("cfsNotificationClickTarget"),
+);
+assert.ok(
+    notificationClickHandler.indexOf("cfsNotificationClickTarget") <
+        notificationClickHandler.indexOf("worker.clients.matchAll"),
+);
 
 assert.match(shellWorker, /CFS_STATIC_PREFIXES/);
 assert.match(shellWorker, /url\.pathname\.startsWith\("\/_matrix\/"\)/);
@@ -169,14 +172,18 @@ assert.doesNotMatch(
     shellWorker,
     /access[_-]?token|Authorization|Bearer|idbLoad|tryDecryptToken|getAuthData|pickleKey|media\/v3/i,
 );
-assert.ok(
-    lifecycle.indexOf("clearLocalCfsWebPushAfterSessionEnd") <
-        lifecycle.indexOf("clearStorage({ deleteEverything: true })"),
+const logoutCleanup = lifecycle.slice(
+    lifecycle.indexOf("export async function onLoggedOut"),
+    lifecycle.indexOf("export async function clearStorage"),
 );
+assert.ok(logoutCleanup.indexOf("await clearLocalCfsWebPushAfterSessionEnd") >= 0);
+assert.ok(
+    logoutCleanup.indexOf("await clearLocalCfsWebPushAfterSessionEnd") <
+        logoutCleanup.indexOf("await clearStorageInternal"),
+);
+assert.ok((logoutCleanup.match(/if \(!ownsSession\(\)\) return/g) ?? []).length >= 3);
 assert.match(lifecycle, /Push cleanup is best-effort[\s\S]*mandatory local account wipe/);
-assert.ok(
-    lifecycle.indexOf("await prepareCfsWebPushForAccountReplacement") < lifecycle.indexOf("await doSetLoggedIn"),
-);
+assert.ok(lifecycle.indexOf("await prepareCfsWebPushForAccountReplacement") < lifecycle.indexOf("await doSetLoggedIn"));
 assert.ok(
     manager.indexOf("await disableCfsWebPushMutation(client, operation)") <
         manager.indexOf("await clearLocalCfsWebPushAfterSessionEndMutation(operation)"),

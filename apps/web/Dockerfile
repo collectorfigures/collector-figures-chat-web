@@ -44,7 +44,7 @@ USER root
 
 # Exact Alpine v3.24 package versions used by this immutable base.
 # Source: https://dl-cdn.alpinelinux.org/alpine/v3.24/{main,community}/x86_64/APKINDEX.tar.gz
-RUN apk add --no-cache jq=1.8.2-r0 moreutils=0.70-r1
+RUN apk add --no-cache jq=1.8.2-r0 moreutils=0.70-r1 libcrypto3=3.5.8-r0 libssl3=3.5.8-r0
 
 COPY --from=builder /src/apps/web/webapp /app
 

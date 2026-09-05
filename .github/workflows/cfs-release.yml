@@ -174,7 +174,8 @@ jobs:
                     }' > BUILD-PROVENANCE.json
                   jq -e . trivy.json sbom.spdx.json sbom.cyclonedx.json BUILD-PROVENANCE.json LOCAL-IMAGE-INSPECT.json >/dev/null
                   test "$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL" or .Severity == "HIGH")] | length' trivy.json)" = 0
-                  sha256sum trivy.json sbom.spdx.json sbom.cyclonedx.json BUILD-PROVENANCE.json BUILDKIT-METADATA.json LOCAL-IMAGE-INSPECT.json OCI-INSPECTOR.json RELEASE-TAG-ADMISSION.json > PREPUBLISH-SHA256SUMS.txt
+                  sha256sum trivy.json sbom.spdx.json sbom.cyclonedx.json BUILD-PROVENANCE.json BUILDKIT-METADATA.json LOCAL-IMAGE-INSPECT.json LOCAL-IMAGE-SHA256.txt OCI-INSPECTOR.json RELEASE-TAG-ADMISSION.json RELEASE-SOURCE.json > PREPUBLISH-SHA256SUMS.txt
+                  bash scripts/cfs-verify-release-evidence.sh local
             - name: Reverify protected main before any registry mutation
               run: |
                   git fetch --no-tags --depth=1 origin +refs/heads/main:refs/remotes/origin/main
@@ -186,6 +187,7 @@ jobs:
                   password: ${{ secrets.GITHUB_TOKEN }}
             - name: Publish only the run-scoped candidate tag
               run: |
+                  bash scripts/cfs-verify-release-evidence.sh local
                   docker tag "$LOCAL_IMAGE" "$IMAGE:$CANDIDATE_TAG"
                   docker push "$IMAGE:$CANDIDATE_TAG"
                   docker buildx imagetools inspect --raw "$IMAGE:$CANDIDATE_TAG" > OCI-MANIFEST-CANDIDATE.json
@@ -193,18 +195,22 @@ jobs:
                   test "${#candidate_digest}" -eq 71
                   printf '%s' "$candidate_digest" | LC_ALL=C grep -Eq '^sha256:[0-9a-f]{64}$'
                   printf '%s  %s\n' "$candidate_digest" "$IMAGE" > OCI-DIGEST.txt
+                  bash scripts/cfs-verify-release-evidence.sh bind
+                  sha256sum OCI-DIGEST.txt OCI-MANIFEST-CANDIDATE.json OCI-PLATFORM-MANIFEST.json OCI-DIGEST-BINDING.json > CANDIDATE-SHA256SUMS.txt
             - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
             - name: Sign, attest and verify the candidate digest
               run: |
                   digest="$(cut -d' ' -f1 OCI-DIGEST.txt)"
                   test "${#digest}" -eq 71
                   printf '%s' "$digest" | LC_ALL=C grep -Eq '^sha256:[0-9a-f]{64}$'
+                  bash scripts/cfs-verify-release-evidence.sh candidate
                   cosign sign --yes "$IMAGE@$digest"
                   cosign attest --yes --type slsaprovenance --predicate BUILD-PROVENANCE.json "$IMAGE@$digest"
                   cosign verify "$IMAGE@$digest" --certificate-identity "$CERTIFICATE_IDENTITY" --certificate-oidc-issuer "https://token.actions.githubusercontent.com" > COSIGN-VERIFY.json
                   cosign verify-attestation --type slsaprovenance "$IMAGE@$digest" --certificate-identity "$CERTIFICATE_IDENTITY" --certificate-oidc-issuer "https://token.actions.githubusercontent.com" > COSIGN-ATTESTATION-VERIFY.json
                   jq -e . COSIGN-VERIFY.json COSIGN-ATTESTATION-VERIFY.json >/dev/null
-                  sha256sum OCI-DIGEST.txt OCI-MANIFEST-CANDIDATE.json COSIGN-VERIFY.json COSIGN-ATTESTATION-VERIFY.json >> PREPUBLISH-SHA256SUMS.txt
+                  sha256sum COSIGN-VERIFY.json COSIGN-ATTESTATION-VERIFY.json > SIGNATURES-SHA256SUMS.txt
+                  bash scripts/cfs-verify-release-evidence.sh signed
             - name: Reverify protected main before formal tag promotion
               run: |
                   git fetch --no-tags --depth=1 origin +refs/heads/main:refs/remotes/origin/main
@@ -214,9 +220,10 @@ jobs:
                   digest="$(cut -d' ' -f1 OCI-DIGEST.txt)"
                   test "${#digest}" -eq 71
                   printf '%s' "$digest" | LC_ALL=C grep -Eq '^sha256:[0-9a-f]{64}$'
+                  bash scripts/cfs-verify-release-evidence.sh signed
                   bash scripts/cfs-promote-oci-tag.sh \
                     "$IMAGE" "$GITHUB_REF_NAME" "sha-$GITHUB_SHA" "$digest" .
-                  sha256sum OCI-INSPECT-SHA.json OCI-INSPECT-VERSION.json OCI-MANIFEST-TAG.json OCI-MANIFEST-SHA.json OCI-PROMOTION-TAG-METADATA.json OCI-PROMOTION-SHA-METADATA.json OCI-PROMOTION-SUMMARY.json >> PREPUBLISH-SHA256SUMS.txt
+                  sha256sum PREPUBLISH-SHA256SUMS.txt CANDIDATE-SHA256SUMS.txt SIGNATURES-SHA256SUMS.txt OCI-INSPECT-SHA.json OCI-INSPECT-VERSION.json OCI-MANIFEST-TAG.json OCI-MANIFEST-SHA.json OCI-PROMOTION-TAG-METADATA.json OCI-PROMOTION-SHA-METADATA.json OCI-PROMOTION-SUMMARY.json > RELEASE-SHA256SUMS.txt
             - name: Upload complete release evidence
               if: always()
               uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -240,6 +247,11 @@ jobs:
                       OCI-PROMOTION-SUMMARY.json
                       OCI-PROMOTION-TAG-METADATA.json
                       PREPUBLISH-SHA256SUMS.txt
+                      CANDIDATE-SHA256SUMS.txt
+                      SIGNATURES-SHA256SUMS.txt
+                      RELEASE-SHA256SUMS.txt
+                      OCI-PLATFORM-MANIFEST.json
+                      OCI-DIGEST-BINDING.json
                       RELEASE-TAG-ADMISSION.json
                       RELEASE-SOURCE.json
                       sbom.cyclonedx.json

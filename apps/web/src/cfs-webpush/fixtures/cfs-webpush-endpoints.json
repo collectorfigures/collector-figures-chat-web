@@ -106,6 +106,16 @@
       "endpoint": "https://push.example.invalid/wpush/v2/opaqueToken1234567890"
     },
     {
+      "case": "reject-fcm-semicolon-params",
+      "reason": "unsupported_fcm_path_params",
+      "endpoint": "https://fcm.googleapis.com/wp/opaqueToken1234567890;unexpected=value"
+    },
+    {
+      "case": "reject-mozilla-semicolon-params",
+      "reason": "unsupported_mozilla_path_params",
+      "endpoint": "https://updates.push.services.mozilla.com/wpush/v2/opaqueToken1234567890;unexpected=value"
+    },
+    {
       "case": "reject-safari-pending-acceptance",
       "reason": "safari_pending_real_acceptance",
       "endpoint": "https://web.push.apple.com/QP1cfsSafariOpaqueToken1234567890"

@@ -36,6 +36,7 @@ import { encryptPickleKey } from "./utils/tokens/pickling";
 import * as StorageManager from "./utils/StorageManager.ts";
 import type BasePlatform from "./BasePlatform.ts";
 import * as createMatrixClientModule from "./utils/createMatrixClient";
+import * as CfsWebPush from "./cfs-webpush/CfsWebPushManager";
 
 const { logout, restoreSessionFromStorage, setLoggedIn } = Lifecycle;
 
@@ -51,6 +52,7 @@ describe("Lifecycle", () => {
     let mockClient!: MockedObject<MatrixJs.MatrixClient>;
 
     beforeEach(() => {
+        Lifecycle.setSessionLockNotStolen();
         mockPlatform = mockPlatformPeg();
         mockClient = getMockClientWithEventEmitter({
             ...mockClientMethodsUser(),
@@ -86,7 +88,9 @@ describe("Lifecycle", () => {
     });
 
     afterEach(() => {
+        Lifecycle.setSessionLockNotStolen();
         vi.resetAllMocks();
+        vi.restoreAllMocks();
     });
 
     const initIdbMock = (mockStore: Record<string, Record<string, unknown>> = {}): void => {
@@ -878,18 +882,79 @@ describe("Lifecycle", () => {
         });
 
         it("should call logout on the client when oauth is not used", async () => {
-            logout();
-
-            await flushPromises();
+            await logout();
 
             expect(mockClient.logout).toHaveBeenCalledWith(true);
         });
 
+        it("does not resolve logout before both OAuth revocations and local cleanup complete", async () => {
+            localStorage.setItem("mx_oidc_client_id", "test-client-id");
+            localStorage.setItem("cfs-sensitive-session-state", "old-session");
+            let release!: () => void;
+            let started!: () => void;
+            const revocationsStarted = new Promise<void>((resolve) => {
+                started = resolve;
+            });
+            const revocations = new Promise<void>((resolve) => {
+                release = resolve;
+            });
+            let count = 0;
+            vi.mocked(OAuth2.prototype.revokeToken).mockImplementation(async () => {
+                if (++count === 2) started();
+                await revocations;
+            });
+            let settled = false;
+            const pending = logout().then(() => {
+                settled = true;
+            });
+            await revocationsStarted;
+            await Promise.resolve();
+            const resolvedBeforeRevocation = settled;
+            release();
+            await pending;
+            expect(resolvedBeforeRevocation).toBe(false);
+            expect(localStorage.getItem("cfs-sensitive-session-state")).toBeNull();
+            expect(OAuth2.prototype.revokeToken).toHaveBeenCalledWith(accessToken, "access_token");
+            expect(OAuth2.prototype.revokeToken).toHaveBeenCalledWith(refreshToken, "refresh_token");
+        });
+
+        it.each([false, true])(
+            "late logout preserves a replacement client and its storage (lock stolen=%s)",
+            async (stolen) => {
+                localStorage.setItem("mx_oidc_client_id", "test-client-id");
+                let release!: () => void;
+                let started!: () => void;
+                const reached = new Promise<void>((resolve) => {
+                    started = resolve;
+                });
+                const response = new Promise<void>((resolve) => {
+                    release = resolve;
+                });
+                let count = 0;
+                vi.mocked(OAuth2.prototype.revokeToken).mockImplementation(async () => {
+                    if (++count === 2) started();
+                    await response;
+                });
+                const pending = logout();
+                await reached;
+                if (stolen) await Lifecycle.onSessionLockStolen();
+                const replacement = Object.assign(Object.create(mockClient), {
+                    stopClient: vi.fn(),
+                    removeAllListeners: vi.fn(),
+                    store: { destroy: vi.fn() },
+                }) as MatrixClient;
+                vi.spyOn(MatrixClientPeg, "get").mockReturnValue(replacement);
+                localStorage.setItem("cfs-new-account-state", "must-survive");
+                release();
+                await pending;
+                expect(replacement.stopClient).not.toHaveBeenCalled();
+                expect(localStorage.getItem("cfs-new-account-state")).toBe("must-survive");
+            },
+        );
+
         it("should revoke tokens when user is authenticated with oauth2", async () => {
             localStorage.setItem("mx_oidc_client_id", "test-client-id");
-            logout();
-
-            await flushPromises();
+            await logout();
 
             expect(mockClient.logout).not.toHaveBeenCalled();
             expect(OAuth2.prototype.revokeToken).toHaveBeenCalledWith(accessToken, "access_token");
@@ -907,11 +972,90 @@ describe("Lifecycle", () => {
 
             expect(localStorage.getItem("cfs-sensitive-session-state")).toBeNull();
         });
+
+        it("does not release SessionLock while an old IndexedDB clear is pending", async () => {
+            let release!: () => void;
+            let started!: () => void;
+            const entered = new Promise<void>((resolve) => {
+                started = resolve;
+            });
+            const blocked = new Promise<void>((resolve) => {
+                release = resolve;
+            });
+            vi.spyOn(StorageAccess, "idbClear").mockImplementationOnce(async () => {
+                started();
+                await blocked;
+            });
+            const cleanup = Lifecycle.onLoggedOut();
+            await entered;
+            let handedOff = false;
+            const stolen = Lifecycle.onSessionLockStolen().then(() => {
+                handedOff = true;
+            });
+            await flushPromises();
+            const releasedEarly = handedOff;
+            release();
+            await Promise.all([cleanup, stolen]);
+            expect(releasedEarly).toBe(false);
+        });
+
+        it("continues mandatory Matrix cleanup when Push Cache cleanup rejects", async () => {
+            vi.spyOn(mockPlatform, "clearStorage");
+            localStorage.setItem("cfs-sensitive-session-state", "must-be-cleared");
+            vi.spyOn(CfsWebPush, "clearLocalCfsWebPushAfterSessionEnd").mockRejectedValue(
+                new Error("synthetic Cache failure"),
+            );
+            await Lifecycle.onLoggedOut();
+            expect(localStorage.getItem("cfs-sensitive-session-state")).toBeNull();
+            expect(mockPlatform.clearStorage).toHaveBeenCalled();
+        });
     });
 
     describe("overwritelogin", () => {
         beforeEach(async () => {
             vi.spyOn(MatrixJs, "createClient").mockReturnValue(mockClient);
+        });
+
+        it("does not let an old pending OverwriteLogin replace a newer login", async () => {
+            let release!: () => void;
+            let started!: () => void;
+            const entered = new Promise<void>((resolve) => {
+                started = resolve;
+            });
+            const blocked = new Promise<void>((resolve) => {
+                release = resolve;
+            });
+            vi.spyOn(CfsWebPush, "prepareCfsWebPushForAccountReplacement").mockImplementationOnce(async () => {
+                started();
+                await blocked;
+            });
+            const old = Lifecycle.overwriteLogin({
+                action: Action.OverwriteLogin,
+                credentials: { ...credentials, userId: "@old-replacement:domain" },
+            });
+            const oldResult = old.catch((error) => error);
+            await entered;
+            const replacement = Object.assign(Object.create(mockClient), {
+                getUserId: vi.fn().mockReturnValue("@new-account:domain"),
+                stopClient: vi.fn(),
+                removeAllListeners: vi.fn(),
+                store: { destroy: vi.fn() },
+            }) as MatrixClient;
+            let current: MatrixClient | null = mockClient;
+            vi.spyOn(MatrixClientPeg, "get").mockImplementation(() => current);
+            vi.spyOn(MatrixClientPeg, "unset").mockImplementation(() => {
+                current = null;
+            });
+            vi.spyOn(MatrixClientPeg, "set").mockImplementation((client) => {
+                current = client;
+            });
+            vi.spyOn(createMatrixClientModule, "createClientWithCreds").mockReturnValue(replacement);
+            await setLoggedIn({ ...credentials, userId: "@new-account:domain" });
+            release();
+            expect((await oldResult)?.message).toContain("superseded");
+            expect(MatrixClientPeg.get()).toBe(replacement);
+            expect(replacement.stopClient).not.toHaveBeenCalled();
+            expect(localStorage.getItem("mx_user_id")).toBe("@new-account:domain");
         });
 
         it("should replace the current login with a new one", async () => {

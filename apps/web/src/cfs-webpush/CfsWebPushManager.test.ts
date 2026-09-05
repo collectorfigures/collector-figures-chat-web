@@ -78,6 +78,8 @@ describe("CFS Web Push", () => {
         delete: vi.fn(async (key: string) => cacheEntries.delete(key)),
     };
     const cacheStorage = { open: vi.fn().mockResolvedValue(cleanupCache) };
+    const lockTails = new Map<string, Promise<unknown>>();
+    let onServerLockQueued: (() => void) | undefined;
 
     function makeClient({
         userId = "@account-a:chat.collectorfigures.com",
@@ -115,6 +117,8 @@ describe("CFS Web Push", () => {
 
     beforeEach(() => {
         vi.clearAllMocks();
+        lockTails.clear();
+        onServerLockQueued = undefined;
         endpoint = "https://fcm.googleapis.com/wp/test-endpoint-opaque-123456";
         pushKey = "test-p256dh";
         activeSubscription = subscription;
@@ -146,9 +150,18 @@ describe("CFS Web Push", () => {
             serviceWorker,
             language: "en-US",
             locks: {
-                request: vi.fn(async (_name: string, _options: LockOptions, callback: () => Promise<unknown>) =>
-                    callback(),
-                ),
+                request: vi.fn(async (name: string, _options: LockOptions, callback: () => Promise<unknown>) => {
+                    const previous = lockTails.get(name);
+                    if (previous && name === "cfs-webpush-server-v1") onServerLockQueued?.();
+                    const current = (previous ?? Promise.resolve()).then(callback);
+                    const settled = current.catch(() => {});
+                    lockTails.set(name, settled);
+                    try {
+                        return await current;
+                    } finally {
+                        if (lockTails.get(name) === settled) lockTails.delete(name);
+                    }
+                }),
             },
         } as unknown as Navigator);
         Object.defineProperty(window, "caches", { configurable: true, value: cacheStorage });
@@ -435,10 +448,12 @@ describe("CFS Web Push", () => {
 
         const pendingEnsure = ensureCfsWebPushForGrantedPermission(client);
         await vi.waitFor(() => expect(setPusher).toHaveBeenCalledTimes(2));
-        await disableCfsWebPush(client);
+        const disabling = disableCfsWebPush(client);
+        await vi.waitFor(async () => expect(await readActiveOwnerMarker()).toBeUndefined());
         resolveEnsure();
 
         await expect(pendingEnsure).rejects.toThrow("superseded");
+        await disabling;
         expect(localStorage.getItem("cfs_webpush_enrollment_v1")).toBeNull();
         expect(localStorage.getItem("cfs_webpush_registration_v1")).toBeNull();
         await expect(readActiveOwnerMarker()).resolves.toBeUndefined();
@@ -534,7 +549,7 @@ describe("CFS Web Push", () => {
             safari_status: "fail_closed_pending_real_acceptance",
         });
         expect(endpointFixtures.valid).toHaveLength(5);
-        expect(endpointFixtures.invalid).toHaveLength(12);
+        expect(endpointFixtures.invalid).toHaveLength(14);
         expect(endpointFixtures.provenance).toHaveProperty("chrome");
         expect(endpointFixtures.provenance).toHaveProperty("edge");
         expect(endpointFixtures.provenance).toHaveProperty("firefox");
@@ -580,14 +595,102 @@ describe("CFS Web Push", () => {
         expect(serviceWorker.register).not.toHaveBeenCalled();
     });
 
+    it("does not remove a same-owner target after a newer ensure adopts it", async () => {
+        const server = new Set<string>();
+        const setPusher = vi.fn(async () => {
+            server.add(pushKey);
+        });
+        const removePusher = vi.fn(async (key: string) => {
+            server.delete(key);
+        });
+        const client = makeClient({ setPusher, removePusher });
+        await enableCfsWebPush(client, false);
+        let release!: () => void;
+        let signal!: () => void;
+        const reached = new Promise<void>((resolve) => {
+            signal = resolve;
+        });
+        const response = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        setPusher.mockImplementationOnce(async () => {
+            server.add(pushKey);
+            signal();
+            await response;
+        });
+        const old = ensureCfsWebPushForGrantedPermission(client).catch(() => {});
+        await reached;
+        const queued = new Promise<void>((resolve) => {
+            onServerLockQueued = resolve;
+        });
+        const newer = ensureCfsWebPushForGrantedPermission(client);
+        // A correct implementation may serialize adoption behind the pending old request.
+        await Promise.race([newer, queued]);
+        release();
+        await Promise.all([old, newer]);
+        expect(server.size).toBe(1);
+        await expect(getCfsWebPushStatus(client)).resolves.toMatchObject({ enabled: true });
+    });
+
+    it("does not replay an old tombstone against the currently enrolled target", async () => {
+        const removePusher = vi.fn().mockResolvedValue(undefined);
+        const client = makeClient({ removePusher });
+        await enableCfsWebPush(client, false);
+        const stored = JSON.parse(localStorage.getItem("cfs_webpush_registration_v1")!);
+        const url = new URL("/cfs-push/cleanup-retry.json", window.location.origin);
+        url.searchParams.set("owner", stored.ownerFingerprint);
+        cacheEntries.set(
+            url.href,
+            new Response(
+                JSON.stringify({
+                    deviceId: stored.deviceId,
+                    ownerFingerprint: stored.ownerFingerprint,
+                    targets: [{ appId: stored.appId, pushKey: stored.pushKey }],
+                    browserUnsubscribePending: false,
+                }),
+            ),
+        );
+        await ensureCfsWebPushForGrantedPermission(client);
+        expect(removePusher).not.toHaveBeenCalled();
+        await expect(getCfsWebPushStatus(client)).resolves.toMatchObject({ enabled: true });
+    });
+
+    it("revokes the old owner marker when mutation-token storage writes fail", async () => {
+        await enableCfsWebPush(makeClient(), false);
+        const setItem = vi.spyOn(window.localStorage, "setItem").mockImplementation(() => {
+            throw new DOMException("synthetic quota", "QuotaExceededError");
+        });
+        await clearLocalCfsWebPushAfterSessionEnd().catch(() => {});
+        expect(setItem).toHaveBeenCalled();
+        setItem.mockRestore();
+        expect(await readActiveOwnerMarker()).toBeUndefined();
+    });
+
     it("reports enabled only for the exact enrolled account and device", async () => {
         await enableCfsWebPush(makeClient(), true);
 
         await expect(getCfsWebPushStatus(makeClient())).resolves.toMatchObject({ enabled: true });
         await expect(
-            getCfsWebPushStatus(
-                makeClient({ userId: "@account-b:chat.collectorfigures.com", deviceId: "DEVICE-B" }),
-            ),
+            getCfsWebPushStatus(makeClient({ userId: "@account-b:chat.collectorfigures.com", deviceId: "DEVICE-B" })),
         ).resolves.toMatchObject({ enabled: false });
+    });
+
+    it("reports Cache deletion failure while replacing the old grant with a revoked marker", async () => {
+        await enableCfsWebPush(makeClient(), false);
+        cleanupCache.delete.mockRejectedValueOnce(new Error("synthetic Cache delete failure"));
+        await expect(clearLocalCfsWebPushAfterSessionEnd()).rejects.toThrow("owner revocation failed");
+        expect(await readActiveOwnerMarker()).toMatchObject({ revoked: true });
+        expect((await readActiveOwnerMarker())?.ownerFingerprint).toBeUndefined();
+    });
+
+    it("does not report successful revocation when both Cache deletion and replacement fail", async () => {
+        await enableCfsWebPush(makeClient(), false);
+        cleanupCache.delete.mockRejectedValueOnce(new Error("synthetic Cache delete failure"));
+        cleanupCache.put.mockRejectedValueOnce(new Error("synthetic Cache replacement failure"));
+        await expect(clearLocalCfsWebPushAfterSessionEnd()).rejects.toThrow("owner revocation failed");
+        expect(activeSubscription).toBeNull();
+        expect(localStorage.getItem("cfs_webpush_enrollment_v1")).toBeNull();
+        // Persistent Cache authority could not be revoked: retain this failure, never call it a completed wipe.
+        expect((await readActiveOwnerMarker())?.ownerFingerprint).toBeDefined();
     });
 });
