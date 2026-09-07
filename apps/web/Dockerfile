@@ -7,10 +7,11 @@ FROM --platform=$BUILDPLATFORM ghcr.io/pnpm/pnpm:11.20.0@sha256:31cbb105d08d5786
 # Builder
 FROM --platform=$BUILDPLATFORM node:24.20.0-trixie-slim@sha256:a747ad80c8a161b650d79a6da9c422005b91148b18b8d2c669eb5a0b7c07e600 AS builder
 
-# Git is required by the locked Git dependencies and version/link scripts.
+# Git is required by the locked Git dependencies and version/link scripts;
+# the pinned standalone pnpm binary also requires libatomic.so.1.
 # Keep only the required tools, from the same Trixie distribution.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git=1:2.47.3-0+deb13u1 ca-certificates=20250419 \
+    git=1:2.47.3-0+deb13u1 ca-certificates=20250419 libatomic1=14.2.0-19 \
     && rm -rf /var/lib/apt/lists/*
 
 # Upgrade the complete bundled npm, including its security-fixed dependencies.
