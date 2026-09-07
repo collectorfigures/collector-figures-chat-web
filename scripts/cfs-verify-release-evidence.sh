@@ -29,7 +29,7 @@ candidate_files=(
   OCI-DIGEST.txt OCI-MANIFEST-CANDIDATE.json OCI-PLATFORM-MANIFEST.json
   OCI-DIGEST-BINDING.json
 )
-signature_files=(COSIGN-VERIFY.json COSIGN-ATTESTATION-VERIFY.json)
+signature_files=(COSIGN-VERIFY.json COSIGN-ATTESTATION-VERIFY.raw.jsonl COSIGN-ATTESTATION-VERIFY.json)
 verify_list() {
   local manifest="$1"; shift
   regular "$manifest"
@@ -145,16 +145,26 @@ if [[ "$stage" != local ]]; then
 fi
 if [[ "$stage" = signed ]]; then
   verify_list SIGNATURES-SHA256SUMS.txt "${signature_files[@]}"
+  # Preserve the exact successful stdout and require lossless normalization.
+  jq -se --slurpfile normalized COSIGN-ATTESTATION-VERIFY.json '
+    length>0 and all(.[]; type=="object") and $normalized==[.]
+  ' COSIGN-ATTESTATION-VERIFY.raw.jsonl > /dev/null
   jq -e --arg image "$IMAGE" --arg digest "$candidate" '
     type=="array" and length>0 and all(.[];
       .critical.identity["docker-reference"]==$image and .critical.image["docker-manifest-digest"]==$digest)
   ' COSIGN-VERIFY.json > /dev/null
   jq -e --arg image "$IMAGE" --arg digest "${candidate#sha256:}" --slurpfile predicate BUILD-PROVENANCE.json '
     type=="array" and length>0 and all(.[];
-      (.payload | @base64d | fromjson) as $statement
-      | $statement.predicateType=="https://slsa.dev/provenance/v1"
-      and any($statement.subject[]; .name==$image and .digest.sha256==$digest)
-      and $statement.predicate==$predicate[0])
+      .payloadType=="application/vnd.in-toto+json"
+      and (.signatures|type)=="array" and (.signatures|length)>0
+      and all(.signatures[]; (.sig|type)=="string" and (.sig|length)>0)
+      and (.payload|type)=="string" and (.payload|length)>0
+      and ((.payload|@base64d|@base64)==.payload)
+      and ((.payload | @base64d | fromjson) as $statement
+      | $statement._type=="https://in-toto.io/Statement/v0.1"
+      and $statement.predicateType=="https://slsa.dev/provenance/v1"
+      and $statement.subject==[{name:$image,digest:{sha256:$digest}}]
+      and $statement.predicate==$predicate[0]))
   ' COSIGN-ATTESTATION-VERIFY.json > /dev/null
 fi
 printf 'CFS_RELEASE_EVIDENCE_GUARD_PASS stage=%s frozen_checksums_verified=true config_digest=%s\n' "$stage" "$config_digest"

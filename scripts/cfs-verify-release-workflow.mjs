@@ -45,6 +45,51 @@ assert.match(releaseEvidenceGuard, /test ! -L/);
 assert.match(releaseEvidenceGuard, /Metadata\.ImageID/);
 assert.match(releaseEvidenceGuard, /statement\.predicate==\$predicate\[0\]/);
 assert.match(releaseEvidenceGuard, /verify_list SIGNATURES-SHA256SUMS\.txt/);
+function verifyCosignContract(source) {
+    assert.match(
+        source,
+        /cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6[^\n]*\n\s+with:\n\s+cosign-release: v3\.0\.6\n/,
+    );
+    const block = source.slice(
+        source.indexOf("- name: Sign, attest and verify"),
+        source.indexOf("- name: Reverify protected main before formal"),
+    );
+    assert.match(block, /run: \|\n\s+set -Eeuo pipefail\n/);
+    assert.match(block, /cosign attest --yes --type slsaprovenance1 --predicate BUILD-PROVENANCE\.json/);
+    assert.match(
+        block,
+        /cosign verify-attestation --type slsaprovenance1 "\$IMAGE@\$digest" --certificate-identity "\$CERTIFICATE_IDENTITY" --certificate-oidc-issuer "https:\/\/token\.actions\.githubusercontent\.com" > COSIGN-ATTESTATION-VERIFY\.raw\.jsonl\n/,
+    );
+    assert.match(
+        block,
+        /jq -se 'if length > 0 and all\(\.\[\]; type == "object"\) then \. else error\("expected verified envelope objects"\) end' COSIGN-ATTESTATION-VERIFY\.raw\.jsonl > COSIGN-ATTESTATION-VERIFY\.json/,
+    );
+    assert.match(
+        block,
+        /sha256sum COSIGN-VERIFY\.json COSIGN-ATTESTATION-VERIFY\.raw\.jsonl COSIGN-ATTESTATION-VERIFY\.json > SIGNATURES-SHA256SUMS\.txt/,
+    );
+    assert.ok(
+        source
+            .slice(source.indexOf("Upload complete release evidence"))
+            .includes("COSIGN-ATTESTATION-VERIFY.raw.jsonl"),
+    );
+}
+verifyCosignContract(workflow);
+for (const [before, after] of [
+    ["--type slsaprovenance1", "--type slsaprovenance"],
+    ["cosign-release: v3.0.6", "cosign-release: latest"],
+    ["set -Eeuo pipefail", "set +e"],
+    ["> COSIGN-ATTESTATION-VERIFY.raw.jsonl", "| jq -s . > COSIGN-ATTESTATION-VERIFY.raw.jsonl"],
+    ['if length > 0 and all(.[]; type == "object")', "if true"],
+    ["sha256sum COSIGN-VERIFY.json COSIGN-ATTESTATION-VERIFY.raw.jsonl", "sha256sum COSIGN-VERIFY.json"],
+]) {
+    assert.throws(() => verifyCosignContract(workflow.replace(before, after)));
+}
+assert.match(releaseEvidenceGuard, /\$normalized==\[\.\]/);
+assert.match(releaseEvidenceGuard, /payloadType=="application\/vnd\.in-toto\+json"/);
+console.log(
+    "CFS_COSIGN_V3_0_6_INTERFACE_CONTRACT_PASS predicate=slsaprovenance1 raw_stdout_preserved=true normalization_after_success=true real_signing=false",
+);
 const dockerfile = readFileSync(new URL("../apps/web/Dockerfile", import.meta.url), "utf8");
 const dockerPackage = readFileSync(new URL("./docker-package.sh", import.meta.url), "utf8");
 const packageText = readFileSync(new URL("../apps/web/package.json", import.meta.url), "utf8");
