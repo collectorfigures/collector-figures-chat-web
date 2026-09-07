@@ -5,7 +5,21 @@
 FROM --platform=$BUILDPLATFORM ghcr.io/pnpm/pnpm:11.20.0@sha256:31cbb105d08d57866635f5e35e80cc17eff3de13ac26e719a58c173d8f824ae0 AS pnpm
 
 # Builder
-FROM --platform=$BUILDPLATFORM node:24-trixie@sha256:499ac30d42645e5c2227c0f8ff2439499da08b8893326a991f192dfe8e6b1d98 AS builder
+FROM --platform=$BUILDPLATFORM node:24.20.0-trixie-slim@sha256:a747ad80c8a161b650d79a6da9c422005b91148b18b8d2c669eb5a0b7c07e600 AS builder
+
+# Git is required by the locked Git dependencies and version/link scripts.
+# Keep only the required tools, from the same Trixie distribution.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git=1:2.47.3-0+deb13u1 ca-certificates=20250419 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Upgrade the complete bundled npm, including its security-fixed dependencies.
+ADD --checksum=sha256:9f58bff01604cb1b14008fef14dceb14d836a49225e45c6c2e37de3be3e707f0 \
+    https://registry.npmjs.org/npm/-/npm-11.19.1.tgz /tmp/cfs-npm.tgz
+RUN npm install --global --offline --ignore-scripts --no-audit --no-fund \
+    --cache /tmp/cfs-npm-cache /tmp/cfs-npm.tgz \
+    && test "$(npm --version)" = "11.19.1" \
+    && rm -rf /tmp/cfs-npm.tgz /tmp/cfs-npm-cache
 
 COPY --from=pnpm /opt/pnpm /opt/pnpm
 RUN ln -s /opt/pnpm/pnpm /usr/local/bin/pnpm
