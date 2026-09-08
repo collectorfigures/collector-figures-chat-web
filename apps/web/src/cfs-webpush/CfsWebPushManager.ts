@@ -12,8 +12,10 @@ import SdkConfig from "../SdkConfig";
 import {
     assertCurrentCfsWebPushMutation,
     type CfsWebPushMutation,
+    invalidateCfsWebPushMutation,
     isCurrentCfsWebPushMutation,
     publishCfsWebPushMutation,
+    readCfsWebPushMutation,
     SupersededCfsWebPushMutationError,
     supersedeCfsWebPushMutation,
     waitForCurrentCfsWebPushMutation,
@@ -81,10 +83,7 @@ export type CfsWebPushCommitPhase =
     | "after-enrollment-write-before-assert"
     | "active-owner-cache-write-pending";
 
-type CfsWebPushCommitTestHook = (
-    phase: CfsWebPushCommitPhase,
-    operation: CfsWebPushMutation,
-) => Promise<void>;
+type CfsWebPushCommitTestHook = (phase: CfsWebPushCommitPhase, operation: CfsWebPushMutation) => Promise<void>;
 
 let commitTestHook: CfsWebPushCommitTestHook | undefined;
 
@@ -198,7 +197,9 @@ export function validateSubscriptionEndpoint(endpoint: string): void {
     const fcmPath = new RegExp(`^/(?:fcm/send|wp)/${opaquePathToken}$`);
     const windowsHost = /^(?:[a-z0-9-]+\.)*notify\.windows\.com$/;
     const validProviderShape =
-        (hostname === "updates.push.services.mozilla.com" && mozillaPath.test(parsed.pathname) && parsed.search === "") ||
+        (hostname === "updates.push.services.mozilla.com" &&
+            mozillaPath.test(parsed.pathname) &&
+            parsed.search === "") ||
         (hostname === "fcm.googleapis.com" && fcmPath.test(parsed.pathname) && parsed.search === "") ||
         windowsHost.test(hostname);
     if (!validProviderShape) {
@@ -302,6 +303,58 @@ async function withCfsWebPushStateLock<T>(action: () => Promise<T>): Promise<T> 
     return navigator.locks.request("cfs-webpush-state-v1", { mode: "exclusive" }, action);
 }
 
+async function withCfsWebPushServerLock<T>(action: () => Promise<T>): Promise<T> {
+    if (!("locks" in navigator)) throw new Error("Web Locks is unavailable for cross-page Push ownership");
+    // Hold through network completion and state commit/compensation: adoption cannot race a sent deletion.
+    return navigator.locks.request("cfs-webpush-server-v1", { mode: "exclusive" }, action);
+}
+
+async function publishCfsWebPushExitMutation(): Promise<CfsWebPushMutation> {
+    const previous = readCfsWebPushMutation();
+    const stored = readStoredRegistration();
+    const operationId = stored?.operationId ?? readEnrollment()?.operationId;
+    try {
+        return await publishCfsWebPushMutation();
+    } catch (cause) {
+        const failures: unknown[] = [cause];
+        try {
+            await invalidateCfsWebPushMutation(previous);
+        } catch (error) {
+            failures.push(error);
+        }
+        // Cache revocation must not depend on successfully writing a replacement localStorage token.
+        if (operationId) {
+            try {
+                await compareAndDeleteCfsWebPushOwnerState({ operationId });
+            } catch (error) {
+                failures.push(error);
+            }
+        }
+        if (stored) {
+            try {
+                await withCfsWebPushServerLock(async () => {
+                    const current = readStoredRegistration();
+                    if (current && current.operationId !== stored.operationId) return;
+                    const registration = await navigator.serviceWorker.getRegistration(CFS_PUSH_SCOPE);
+                    const subscription = await registration?.pushManager.getSubscription();
+                    if (subscription?.toJSON().keys?.p256dh === stored.pushKey) {
+                        await unsubscribeBrowser(registration);
+                    }
+                    await writeCleanupTombstone({
+                        deviceId: stored.deviceId,
+                        ownerFingerprint: stored.ownerFingerprint,
+                        targets: [{ appId: stored.appId, pushKey: stored.pushKey }],
+                        browserUnsubscribePending: false,
+                    });
+                });
+            } catch (error) {
+                failures.push(error);
+            }
+        }
+        throw new AggregateError(failures, "CFS Web Push exit token failed; exact local revocation was attempted");
+    }
+}
+
 async function mutateActiveOwnerMarker<T>(operation: CfsWebPushMutation, action: () => Promise<T>): Promise<T> {
     return waitForCurrentCfsWebPushMutation(operation, () =>
         withCfsWebPushStateLock(async () => {
@@ -333,15 +386,41 @@ async function readActiveOwnerMarkerRecord(operation?: CfsWebPushMutation): Prom
     }
 }
 
-async function clearActiveOwnerMarker(operation: CfsWebPushMutation): Promise<void> {
-    if (!("caches" in window)) return;
+async function clearActiveOwnerMarker(operation: CfsWebPushMutation, revokeEnrollment = false): Promise<void> {
     await mutateActiveOwnerMarker(operation, async () => {
+        if (revokeEnrollment) clearEnrollment();
+        if (!("caches" in window)) throw new Error("Cache Storage is unavailable for Push owner revocation");
         const cache = await window.caches.open(CLEANUP_CACHE);
         assertCurrentCfsWebPushMutation(operation);
-        await cache.delete(cleanupCacheUrl(ACTIVE_OWNER_PATH));
+        await revokeOwnerCacheEntry(cache, operation.operationId);
         assertCurrentCfsWebPushMutation(operation);
     });
     assertCurrentCfsWebPushMutation(operation);
+}
+
+async function revokeOwnerCacheEntry(cache: Cache, operationId: string): Promise<void> {
+    try {
+        await cache.delete(cleanupCacheUrl(ACTIVE_OWNER_PATH));
+    } catch (deletionError) {
+        // Preserve the failure, but revoke display authority if replacement writes still work.
+        // A revoked record deliberately has no ownerFingerprint and cannot pass the worker gate.
+        try {
+            await cache.put(
+                cleanupCacheUrl(ACTIVE_OWNER_PATH),
+                new Response(
+                    JSON.stringify({
+                        cfs_schema: 1,
+                        revoked: true,
+                        operationId,
+                    }),
+                    { headers: { "Content-Type": "application/json", "Cache-Control": "no-store" } },
+                ),
+            );
+        } catch (replacementError) {
+            throw new AggregateError([deletionError, replacementError], "Push owner Cache is not writable");
+        }
+        throw new AggregateError([deletionError], "Push owner Cache deletion failed; display authority was revoked");
+    }
 }
 
 async function commitCfsWebPushOwnerState(
@@ -394,7 +473,7 @@ async function compareAndDeleteCfsWebPushOwnerState(operation: CfsWebPushMutatio
         if (!response) return;
         const marker = (await response.json()) as Partial<ActiveOwnerMarker>;
         if (marker.operationId === operation.operationId) {
-            await cache.delete(cleanupCacheUrl(ACTIVE_OWNER_PATH));
+            await revokeOwnerCacheEntry(cache, operation.operationId);
         }
     });
 }
@@ -442,10 +521,7 @@ async function readCleanupTombstone(
     }
 }
 
-async function writeCleanupTombstone(
-    tombstone: CleanupTombstone,
-    operation?: CfsWebPushMutation,
-): Promise<void> {
+async function writeCleanupTombstone(tombstone: CleanupTombstone, operation?: CfsWebPushMutation): Promise<void> {
     if (!("caches" in window)) {
         logger.warn("Cache Storage is unavailable; CFS Web Push cleanup retry state cannot be persisted");
         return;
@@ -475,9 +551,7 @@ async function writeCleanupTombstone(
 async function clearCleanupTombstone(ownerFingerprint: string, operation?: CfsWebPushMutation): Promise<void> {
     if (!("caches" in window)) return;
     const cache = await waitForMutationIfPresent(operation, () => window.caches.open(CLEANUP_CACHE));
-    await waitForMutationIfPresent(operation, () =>
-        cache.delete(cleanupCacheUrl(CLEANUP_PATH, ownerFingerprint)),
-    );
+    await waitForMutationIfPresent(operation, () => cache.delete(cleanupCacheUrl(CLEANUP_PATH, ownerFingerprint)));
 }
 
 async function consumeSubscriptionChangeMarker(operation: CfsWebPushMutation): Promise<boolean> {
@@ -487,9 +561,7 @@ async function consumeSubscriptionChangeMarker(operation: CfsWebPushMutation): P
         cache.match(cleanupCacheUrl(SUBSCRIPTION_CHANGE_PATH)),
     );
     if (!marker) return false;
-    await waitForCurrentCfsWebPushMutation(operation, () =>
-        cache.delete(cleanupCacheUrl(SUBSCRIPTION_CHANGE_PATH)),
-    );
+    await waitForCurrentCfsWebPushMutation(operation, () => cache.delete(cleanupCacheUrl(SUBSCRIPTION_CHANGE_PATH)));
     return true;
 }
 
@@ -538,8 +610,12 @@ async function retryCfsWebPushCleanup(
     if (tombstone.deviceId !== owner.deviceId) return false;
 
     const targets = new Map(tombstone.targets.map((target) => [`${target.appId}\u0000${target.pushKey}`, target]));
+    const active = (await isCfsWebPushEnrollmentEnabledForClient(client, operation))
+        ? readStoredRegistration()
+        : undefined;
     const remaining: CleanupTarget[] = [];
     for (const target of targets.values()) {
+        if (active?.appId === target.appId && active.pushKey === target.pushKey) continue;
         try {
             await waitForCurrentCfsWebPushMutation(operation, () => client.removePusher(target.pushKey, target.appId));
         } catch (error) {
@@ -551,7 +627,7 @@ async function retryCfsWebPushCleanup(
         }
     }
 
-    let browserUnsubscribePending = tombstone.browserUnsubscribePending;
+    let browserUnsubscribePending = tombstone.browserUnsubscribePending && !active;
     if (browserUnsubscribePending) {
         try {
             await unsubscribeBrowser(undefined, operation);
@@ -698,21 +774,17 @@ async function enableCfsWebPushMutation(
     await consumeSubscriptionChangeMarker(operation);
 
     const registration = await getPushRegistration(operation);
-    let existing = await waitForCurrentCfsWebPushMutation(operation, () =>
-        registration.pushManager.getSubscription(),
-    );
+    let existing = await waitForCurrentCfsWebPushMutation(operation, () => registration.pushManager.getSubscription());
     const existingOwnerBound = Boolean(
         existing &&
-            stored?.appId === config.appId &&
-            stored.deviceId === owner.deviceId &&
-            stored.ownerFingerprint === owner.ownerFingerprint,
+        stored?.appId === config.appId &&
+        stored.deviceId === owner.deviceId &&
+        stored.ownerFingerprint === owner.ownerFingerprint,
     );
     if (existing && !existingOwnerBound) {
         await clearActiveOwnerMarker(operation);
         await unsubscribeBrowser(registration, operation);
-        existing = await waitForCurrentCfsWebPushMutation(operation, () =>
-            registration.pushManager.getSubscription(),
-        );
+        existing = await waitForCurrentCfsWebPushMutation(operation, () => registration.pushManager.getSubscription());
         if (existing) throw new Error("Unowned browser Push subscription could not be removed");
     }
     assertCurrentCfsWebPushMutation(operation);
@@ -747,9 +819,7 @@ async function enableCfsWebPushMutation(
         stored.pushKey !== pushKey
     ) {
         try {
-            await waitForCurrentCfsWebPushMutation(operation, () =>
-                client.removePusher(stored.pushKey, stored.appId),
-            );
+            await waitForCurrentCfsWebPushMutation(operation, () => client.removePusher(stored.pushKey, stored.appId));
         } catch (error) {
             if (isCurrentCfsWebPushMutation(operation)) {
                 await writeCleanupTombstone(
@@ -894,11 +964,17 @@ async function enableCfsWebPushMutation(
 }
 
 export async function enableCfsWebPush(client: MatrixClient, requestPermission: boolean): Promise<void> {
-    return enableCfsWebPushMutation(client, requestPermission, publishCfsWebPushMutation());
+    const operation = await publishCfsWebPushMutation();
+    return withCfsWebPushServerLock(() => enableCfsWebPushMutation(client, requestPermission, operation));
 }
 
 export async function ensureCfsWebPushForGrantedPermission(client: MatrixClient): Promise<void> {
-    const operation = publishCfsWebPushMutation();
+    const operation = await publishCfsWebPushMutation();
+    return withCfsWebPushServerLock(() => ensureCfsWebPushMutation(client, operation));
+}
+
+async function ensureCfsWebPushMutation(client: MatrixClient, operation: CfsWebPushMutation): Promise<void> {
+    assertCurrentCfsWebPushMutation(operation);
     if (!supportsWebPush() || Notification.permission !== "granted") return;
     const config = getConfig();
     if (!config) return;
@@ -971,15 +1047,13 @@ async function disableCfsWebPushMutation(client: MatrixClient, operation: CfsWeb
     const failedTargets: CleanupTarget[] = [];
     const exactTarget = Boolean(
         owner &&
-            stored?.appId === appId &&
-            stored.deviceId === owner.deviceId &&
-            stored.ownerFingerprint === owner.ownerFingerprint,
+        stored?.appId === appId &&
+        stored.deviceId === owner.deviceId &&
+        stored.ownerFingerprint === owner.ownerFingerprint,
     );
     if (exactTarget && owner && stored) {
         try {
-            await waitForCurrentCfsWebPushMutation(operation, () =>
-                client.removePusher(stored.pushKey, stored.appId),
-            );
+            await waitForCurrentCfsWebPushMutation(operation, () => client.removePusher(stored.pushKey, stored.appId));
         } catch (error) {
             failures.push(error);
             failedTargets.push({ appId: stored.appId, pushKey: stored.pushKey });
@@ -1013,13 +1087,22 @@ async function disableCfsWebPushMutation(client: MatrixClient, operation: CfsWeb
 }
 
 export async function disableCfsWebPush(client: MatrixClient): Promise<void> {
-    return disableCfsWebPushMutation(client, publishCfsWebPushMutation());
+    const operation = await publishCfsWebPushExitMutation();
+    // Revoke display/enrollment before waiting for an old network request to finish.
+    try {
+        await clearActiveOwnerMarker(operation, true);
+    } catch (error) {
+        logger.warn("Unable to revoke CFS Web Push owner immediately", error);
+    }
+    return withCfsWebPushServerLock(() => disableCfsWebPushMutation(client, operation));
 }
 
 async function clearLocalCfsWebPushAfterSessionEndMutation(operation: CfsWebPushMutation): Promise<void> {
+    let markerFailure: unknown;
     try {
         await clearActiveOwnerMarker(operation);
     } catch (error) {
+        markerFailure = error;
         logger.warn("Unable to clear the active CFS Web Push owner marker during logout", error);
     }
     assertCurrentCfsWebPushMutation(operation);
@@ -1080,14 +1163,28 @@ async function clearLocalCfsWebPushAfterSessionEndMutation(operation: CfsWebPush
             assertCurrentCfsWebPushMutation(operation);
         }
     }
+    if (markerFailure) throw new AggregateError([markerFailure], "CFS Web Push owner revocation failed");
 }
 
 export async function clearLocalCfsWebPushAfterSessionEnd(): Promise<void> {
-    return clearLocalCfsWebPushAfterSessionEndMutation(publishCfsWebPushMutation());
+    const operation = await publishCfsWebPushExitMutation();
+    return withCfsWebPushServerLock(() => clearLocalCfsWebPushAfterSessionEndMutation(operation));
 }
 
 export async function prepareCfsWebPushForAccountReplacement(client?: MatrixClient): Promise<void> {
-    const operation = publishCfsWebPushMutation();
+    const operation = await publishCfsWebPushExitMutation();
+    try {
+        await clearActiveOwnerMarker(operation, true);
+    } catch (error) {
+        logger.warn("Unable to revoke CFS Web Push owner before account replacement", error);
+    }
+    return withCfsWebPushServerLock(() => prepareCfsWebPushAccountReplacementMutation(client, operation));
+}
+
+async function prepareCfsWebPushAccountReplacementMutation(
+    client: MatrixClient | undefined,
+    operation: CfsWebPushMutation,
+): Promise<void> {
     if (client) {
         try {
             await disableCfsWebPushMutation(client, operation);
@@ -1100,6 +1197,6 @@ export async function prepareCfsWebPushForAccountReplacement(client?: MatrixClie
     }
 }
 
-export function supersedeCfsWebPushMutationForSessionLock(): string {
+export function supersedeCfsWebPushMutationForSessionLock(): Promise<string> {
     return supersedeCfsWebPushMutation();
 }

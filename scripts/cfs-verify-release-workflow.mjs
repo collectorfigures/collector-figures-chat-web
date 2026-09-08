@@ -10,6 +10,86 @@ import { readFileSync } from "node:fs";
 
 const workflow = readFileSync(new URL("../.github/workflows/cfs-release.yml", import.meta.url), "utf8");
 const ciWorkflow = readFileSync(new URL("../.github/workflows/cfs-ci.yml", import.meta.url), "utf8");
+const releaseEvidenceGuard = readFileSync(new URL("./cfs-verify-release-evidence.sh", import.meta.url), "utf8");
+
+function verifyEvidenceStages(source) {
+    for (const [stage, count] of Object.entries({ local: 2, bind: 1, candidate: 1, signed: 2 })) {
+        assert.equal(source.split(`bash scripts/cfs-verify-release-evidence.sh ${stage}\n`).length - 1, count);
+    }
+    assert.doesNotMatch(source, />>\s*PREPUBLISH-SHA256SUMS\.txt/);
+    assert.match(
+        source,
+        /LOCAL-IMAGE-SHA256\.txt OCI-INSPECTOR\.json RELEASE-TAG-ADMISSION\.json RELEASE-SOURCE\.json > PREPUBLISH-SHA256SUMS\.txt/,
+    );
+    assert.match(source, /cfs-verify-release-evidence\.sh local\s+docker tag/);
+    assert.match(source, /cfs-verify-release-evidence\.sh candidate\s+cosign sign/);
+    assert.match(source, /cfs-verify-release-evidence\.sh signed\s+bash scripts\/cfs-promote-oci-tag\.sh/);
+    for (const file of [
+        "CANDIDATE-SHA256SUMS.txt",
+        "SIGNATURES-SHA256SUMS.txt",
+        "RELEASE-SHA256SUMS.txt",
+        "OCI-PLATFORM-MANIFEST.json",
+        "OCI-DIGEST-BINDING.json",
+    ]) {
+        assert.ok(source.slice(source.indexOf("Upload complete release evidence")).includes(file));
+    }
+}
+verifyEvidenceStages(workflow);
+for (const stage of ["local", "candidate", "signed"]) {
+    assert.throws(() =>
+        verifyEvidenceStages(workflow.replace(`bash scripts/cfs-verify-release-evidence.sh ${stage}\n`, "")),
+    );
+}
+assert.match(releaseEvidenceGuard, /sha256sum --check --strict/);
+assert.match(releaseEvidenceGuard, /test ! -L/);
+assert.match(releaseEvidenceGuard, /Metadata\.ImageID/);
+assert.match(releaseEvidenceGuard, /statement\.predicate==\$predicate\[0\]/);
+assert.match(releaseEvidenceGuard, /verify_list SIGNATURES-SHA256SUMS\.txt/);
+function verifyCosignContract(source) {
+    assert.match(
+        source,
+        /cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6[^\n]*\n\s+with:\n\s+cosign-release: v3\.0\.6\n/,
+    );
+    const block = source.slice(
+        source.indexOf("- name: Sign, attest and verify"),
+        source.indexOf("- name: Reverify protected main before formal"),
+    );
+    assert.match(block, /run: \|\n\s+set -Eeuo pipefail\n/);
+    assert.match(block, /cosign attest --yes --type slsaprovenance1 --predicate BUILD-PROVENANCE\.json/);
+    assert.match(
+        block,
+        /cosign verify-attestation --type slsaprovenance1 "\$IMAGE@\$digest" --certificate-identity "\$CERTIFICATE_IDENTITY" --certificate-oidc-issuer "https:\/\/token\.actions\.githubusercontent\.com" > COSIGN-ATTESTATION-VERIFY\.raw\.jsonl\n/,
+    );
+    assert.match(
+        block,
+        /jq -se 'if length > 0 and all\(\.\[\]; type == "object"\) then \. else error\("expected verified envelope objects"\) end' COSIGN-ATTESTATION-VERIFY\.raw\.jsonl > COSIGN-ATTESTATION-VERIFY\.json/,
+    );
+    assert.match(
+        block,
+        /sha256sum COSIGN-VERIFY\.json COSIGN-ATTESTATION-VERIFY\.raw\.jsonl COSIGN-ATTESTATION-VERIFY\.json > SIGNATURES-SHA256SUMS\.txt/,
+    );
+    assert.ok(
+        source
+            .slice(source.indexOf("Upload complete release evidence"))
+            .includes("COSIGN-ATTESTATION-VERIFY.raw.jsonl"),
+    );
+}
+verifyCosignContract(workflow);
+for (const [before, after] of [
+    ["--type slsaprovenance1", "--type slsaprovenance"],
+    ["cosign-release: v3.0.6", "cosign-release: latest"],
+    ["set -Eeuo pipefail", "set +e"],
+    ["> COSIGN-ATTESTATION-VERIFY.raw.jsonl", "| jq -s . > COSIGN-ATTESTATION-VERIFY.raw.jsonl"],
+    ['if length > 0 and all(.[]; type == "object")', "if true"],
+    ["sha256sum COSIGN-VERIFY.json COSIGN-ATTESTATION-VERIFY.raw.jsonl", "sha256sum COSIGN-VERIFY.json"],
+]) {
+    assert.throws(() => verifyCosignContract(workflow.replace(before, after)));
+}
+assert.match(releaseEvidenceGuard, /\$normalized==\[\.\]/);
+assert.match(releaseEvidenceGuard, /payloadType=="application\/vnd\.in-toto\+json"/);
+console.log(
+    "CFS_COSIGN_V3_0_6_INTERFACE_CONTRACT_PASS predicate=slsaprovenance1 raw_stdout_preserved=true normalization_after_success=true real_signing=false",
+);
 const dockerfile = readFileSync(new URL("../apps/web/Dockerfile", import.meta.url), "utf8");
 const dockerPackage = readFileSync(new URL("./docker-package.sh", import.meta.url), "utf8");
 const packageText = readFileSync(new URL("../apps/web/package.json", import.meta.url), "utf8");
@@ -117,9 +197,13 @@ function verifyStrictReleaseTagAdmission(source) {
     assert.match(postcheckoutBlock, /build_metadata_allowed: false/);
     assert.match(postcheckoutBlock, /registry_mutations_before_validation: 0/);
 
-    assert.match(releaseBlock, /sha256sum [^\r\n]*RELEASE-TAG-ADMISSION\.json > PREPUBLISH-SHA256SUMS\.txt/);
+    assert.match(
+        releaseBlock,
+        /sha256sum [^\r\n]*RELEASE-TAG-ADMISSION\.json RELEASE-SOURCE\.json > PREPUBLISH-SHA256SUMS\.txt/,
+    );
     const artifactBlock = releaseBlock.slice(releaseBlock.indexOf("- name: Upload complete release evidence"));
-    assert.match(artifactBlock, /PREPUBLISH-SHA256SUMS\.txt\r?\n {22}RELEASE-TAG-ADMISSION\.json/);
+    assert.match(artifactBlock, /^ {22}PREPUBLISH-SHA256SUMS\.txt\r?$/m);
+    assert.match(artifactBlock, /^ {22}RELEASE-TAG-ADMISSION\.json\r?$/m);
     assert.match(artifactBlock, /if-no-files-found: error/);
 }
 
@@ -195,7 +279,10 @@ const weakenedReleaseWorkflows = [
         checkoutBlock,
         `${checkoutBlock.trimEnd()}\n              with:\n                  path: release-source\n`,
     ),
-    workflow.replace(" OCI-INSPECTOR.json RELEASE-TAG-ADMISSION.json >", " OCI-INSPECTOR.json >"),
+    workflow.replace(
+        " OCI-INSPECTOR.json RELEASE-TAG-ADMISSION.json RELEASE-SOURCE.json >",
+        " OCI-INSPECTOR.json RELEASE-SOURCE.json >",
+    ),
     workflow.replace("                      RELEASE-TAG-ADMISSION.json\n", ""),
     workflow.replace("actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1", "actions/checkout@v4"),
 ];
@@ -408,6 +495,7 @@ const literalSecretPatterns = [
 ];
 for (const source of [
     workflow,
+    releaseEvidenceGuard,
     ciWorkflow,
     dockerfile,
     packageText,
@@ -424,6 +512,9 @@ for (const source of [
 
 console.log(
     "CFS_WEB_RELEASE_WORKFLOW_R2_PASS main_gate=true candidate_first=true exact_identity=true prefer_index_false=true metadata_raw_candidate_equal=true pair_preflight=true sha_first=true version_last=true inspect_error_fail_closed=true malformed_digest_rejected=true environment=cfs-web-release local_registry_contract=true package_pins=true actual_credentials=0",
+);
+console.log(
+    "CFS_RELEASE_EVIDENCE_STAGE_CONTRACT_PASS explicit_sets=true immutable_manifests=true config_manifest_index_distinct=true actual_shell_fault_campaign_required=true",
 );
 console.log(
     "CFS_RELEASE_SINGLE_FLIGHT_CONTRACT_PASS release_single_flight=true different_version_tags_same_group=true cross_tag_parallelism=false cancel_in_progress=false group=cfs-web-immutable-release",

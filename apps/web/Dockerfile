@@ -2,10 +2,25 @@
 # Context must be the root of the monorepo
 
 # PNPM source
-FROM --platform=$BUILDPLATFORM ghcr.io/pnpm/pnpm:11.10.0@sha256:9a6eb06d5f861d830fe27d85a91415e60527fa45ec45b52ee43c92a8aaf3bf8a AS pnpm
+FROM --platform=$BUILDPLATFORM ghcr.io/pnpm/pnpm:11.20.0@sha256:31cbb105d08d57866635f5e35e80cc17eff3de13ac26e719a58c173d8f824ae0 AS pnpm
 
 # Builder
-FROM --platform=$BUILDPLATFORM node:24-bullseye@sha256:f7250178a8fcdde6e7340c7f3945e0c5cbcc10bedddc6bcf61edb39ce8f390d2 AS builder
+FROM --platform=$BUILDPLATFORM node:24.20.0-trixie-slim@sha256:a747ad80c8a161b650d79a6da9c422005b91148b18b8d2c669eb5a0b7c07e600 AS builder
+
+# Git is required by the locked Git dependencies and version/link scripts;
+# the pinned standalone pnpm binary also requires libatomic.so.1.
+# Keep only the required tools, from the same Trixie distribution.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git=1:2.47.3-0+deb13u1 ca-certificates=20250419 libatomic1=14.2.0-19 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Upgrade the complete bundled npm, including its security-fixed dependencies.
+ADD --checksum=sha256:9f58bff01604cb1b14008fef14dceb14d836a49225e45c6c2e37de3be3e707f0 \
+    https://registry.npmjs.org/npm/-/npm-11.19.1.tgz /tmp/cfs-npm.tgz
+RUN npm install --global --offline --ignore-scripts --no-audit --no-fund \
+    --cache /tmp/cfs-npm-cache /tmp/cfs-npm.tgz \
+    && test "$(npm --version)" = "11.19.1" \
+    && rm -rf /tmp/cfs-npm.tgz /tmp/cfs-npm-cache
 
 COPY --from=pnpm /opt/pnpm /opt/pnpm
 RUN ln -s /opt/pnpm/pnpm /usr/local/bin/pnpm
@@ -44,7 +59,7 @@ USER root
 
 # Exact Alpine v3.24 package versions used by this immutable base.
 # Source: https://dl-cdn.alpinelinux.org/alpine/v3.24/{main,community}/x86_64/APKINDEX.tar.gz
-RUN apk add --no-cache jq=1.8.2-r0 moreutils=0.70-r1
+RUN apk add --no-cache jq=1.8.2-r0 moreutils=0.70-r1 libcrypto3=3.5.8-r0 libssl3=3.5.8-r0
 
 COPY --from=builder /src/apps/web/webapp /app
 

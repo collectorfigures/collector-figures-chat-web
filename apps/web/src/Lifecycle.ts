@@ -69,6 +69,7 @@ import { type OnLoggedInPayload } from "./dispatcher/payloads/OnLoggedInPayload.
 import { filterBoolean } from "./utils/arrays.ts";
 import { CallStatusListener } from "./CallStatusListener.ts";
 import { CallStore } from "./stores/CallStore.ts";
+import { SESSION_LOCK_CONSTANTS } from "./utils/SessionLock.ts";
 import {
     clearLocalCfsWebPushAfterSessionEnd,
     disableCfsWebPush,
@@ -78,8 +79,43 @@ import {
 
 const HOMESERVER_URL_KEY = "mx_hs_url";
 const ID_SERVER_URL_KEY = "mx_is_url";
+let sessionEpoch = 0;
+let sessionStorageTail: Promise<unknown> = Promise.resolve();
+const sessionStorageWork = new Set<Promise<unknown>>();
 
-async function overwriteLogin(typed: OverwriteLoginPayload): Promise<void> {
+function beginSessionChange(): number {
+    _isLoggingOut = false;
+    return ++sessionEpoch;
+}
+
+function checkSessionEpoch(epoch: number): void {
+    checkSessionLock();
+    if (epoch !== sessionEpoch) throw new SessionLockStolenError("session operation was superseded");
+}
+
+async function withSessionStorageWork<T>(action: () => Promise<T>): Promise<T> {
+    const work = sessionStorageTail.then(() => {
+        checkSessionLock();
+        return action();
+    });
+    sessionStorageTail = work.then(
+        () => {},
+        () => {},
+    );
+    sessionStorageWork.add(work);
+    try {
+        return await work;
+    } finally {
+        sessionStorageWork.delete(work);
+    }
+}
+
+function sessionClaimant(): string | null {
+    return window.localStorage?.getItem(SESSION_LOCK_CONSTANTS.STORAGE_ITEM_CLAIMANT) ?? null;
+}
+
+export async function overwriteLogin(typed: OverwriteLoginPayload): Promise<void> {
+    const epoch = beginSessionChange();
     try {
         await prepareCfsWebPushForAccountReplacement(MatrixClientPeg.get() ?? undefined);
     } catch (error) {
@@ -87,8 +123,9 @@ async function overwriteLogin(typed: OverwriteLoginPayload): Promise<void> {
     }
 
     // Mandatory account and crypto storage replacement must continue even when Push cleanup is incomplete.
+    checkSessionEpoch(epoch);
     stopMatrixClient(false);
-    await doSetLoggedIn(typed.credentials, true, true);
+    await doSetLoggedIn(typed.credentials, true, true, epoch);
 }
 
 dis.register((payload) => {
@@ -125,8 +162,15 @@ export function setSessionLockNotStolen(): void {
  */
 export async function onSessionLockStolen(): Promise<void> {
     sessionLockStolen = true;
-    supersedeCfsWebPushMutationForSessionLock();
-    stopMatrixClient();
+    try {
+        await supersedeCfsWebPushMutationForSessionLock();
+    } catch (error) {
+        logger.warn("CFS Web Push supersession failed while losing the session lock", error);
+    } finally {
+        // The existing cross-page SessionLock must not be released while old local writes are still running.
+        await Promise.allSettled(sessionStorageWork);
+        stopMatrixClient();
+    }
 }
 
 /**
@@ -441,7 +485,17 @@ export function attemptTokenLogin(
  * @returns {Promise} promise which resolves to the loaded or generated pickle key or undefined if
  *    none was loaded nor generated
  */
-async function loadOrCreatePickleKey(credentials: IMatrixClientCreds): Promise<string | undefined> {
+async function loadOrCreatePickleKey(
+    credentials: IMatrixClientCreds,
+    epoch = sessionEpoch,
+): Promise<string | undefined> {
+    return withSessionStorageWork(() => {
+        checkSessionEpoch(epoch);
+        return loadOrCreatePickleKeyInternal(credentials);
+    });
+}
+
+async function loadOrCreatePickleKeyInternal(credentials: IMatrixClientCreds): Promise<string | undefined> {
     // Try to load the pickle key
     const userId = credentials.userId;
     const deviceId = credentials.deviceId;
@@ -472,10 +526,12 @@ async function loadOrCreatePickleKey(credentials: IMatrixClientCreds): Promise<s
  * @param credentials as returned from login
  */
 async function onSuccessfulDelegatedAuthLogin(credentials: IMatrixClientCreds): Promise<void> {
-    await clearStorage();
+    const epoch = beginSessionChange();
+    await clearStorage(undefined, epoch);
     // SSO does not go through setLoggedIn so we need to load/create the pickle key here too
-    credentials.pickleKey = await loadOrCreatePickleKey(credentials);
-    await persistCredentials(credentials);
+    credentials.pickleKey = await loadOrCreatePickleKey(credentials, epoch);
+    await persistCredentials(credentials, epoch);
+    checkSessionEpoch(epoch);
 
     // remember that we just logged in
     sessionStorage.setItem("mx_fresh_login", String(true));
@@ -728,10 +784,11 @@ async function handleLoadSessionFailure(e: unknown, loadSessionOpts?: ILoadSessi
  * @returns {Promise} promise which resolves to the new MatrixClient once it has been started
  */
 export async function setLoggedIn(credentials: IMatrixClientCreds): Promise<MatrixClient> {
+    const epoch = beginSessionChange();
     credentials.freshLogin = true;
     stopMatrixClient();
-    credentials.pickleKey = await loadOrCreatePickleKey(credentials);
-    return doSetLoggedIn(credentials, true, true);
+    credentials.pickleKey = await loadOrCreatePickleKey(credentials, epoch);
+    return doSetLoggedIn(credentials, true, true, epoch);
 }
 
 /**
@@ -750,6 +807,7 @@ export async function setLoggedIn(credentials: IMatrixClientCreds): Promise<Matr
  * @returns {Promise} promise which resolves to the new MatrixClient once it has been started
  */
 export async function hydrateSession(credentials: IMatrixClientCreds): Promise<MatrixClient> {
+    const epoch = beginSessionChange();
     const oldUserId = MatrixClientPeg.safeGet().getUserId();
     const oldDeviceId = MatrixClientPeg.safeGet().getDeviceId();
 
@@ -768,7 +826,7 @@ export async function hydrateSession(credentials: IMatrixClientCreds): Promise<M
             (await PlatformPeg.get()?.getPickleKey(credentials.userId, credentials.deviceId)) ?? undefined;
     }
 
-    return doSetLoggedIn(credentials, overwrite, false);
+    return doSetLoggedIn(credentials, overwrite, false, epoch);
 }
 
 /**
@@ -787,8 +845,9 @@ async function doSetLoggedIn(
     credentials: IMatrixClientCreds,
     clearStorageEnabled: boolean,
     isFreshLogin: boolean,
+    epoch = beginSessionChange(),
 ): Promise<MatrixClient> {
-    checkSessionLock();
+    checkSessionEpoch(epoch);
     credentials.guest = Boolean(credentials.guest);
 
     const softLogout = isSoftLogout();
@@ -808,7 +867,7 @@ async function doSetLoggedIn(
     );
 
     if (clearStorageEnabled) {
-        await clearStorage();
+        await clearStorage(undefined, epoch);
     }
 
     const results = await StorageManager.checkConsistency();
@@ -826,7 +885,7 @@ async function doSetLoggedIn(
     } catch {}
 
     // check the session lock just before creating the new client
-    checkSessionLock();
+    checkSessionEpoch(epoch);
     MatrixClientPeg.set(createClientWithCreds(credentials, auth));
     const client = MatrixClientPeg.safeGet();
 
@@ -838,7 +897,7 @@ async function doSetLoggedIn(
 
     if (localStorage) {
         try {
-            await persistCredentials(credentials);
+            await persistCredentials(credentials, epoch);
             // make sure we don't think that it's a fresh login any more
             sessionStorage.removeItem("mx_fresh_login");
         } catch (e) {
@@ -847,7 +906,7 @@ async function doSetLoggedIn(
     } else {
         logger.warn("No local storage available: can't persist session!");
     }
-    checkSessionLock();
+    checkSessionEpoch(epoch);
 
     // We are now logged in, so fire this. We have yet to start the client but the client_started dispatch is for that.
     // Dispatch this synchronously so SDKContextClass can set the client for other modules to consume.
@@ -865,12 +924,13 @@ async function doSetLoggedIn(
     }
 
     try {
-        await startMatrixClient(client, /*startSyncing=*/ !softLogout, clientPegOpts);
+        await startMatrixClient(client, /*startSyncing=*/ !softLogout, clientPegOpts, epoch);
     } finally {
         clientPegOpts.rustCryptoStoreKey?.fill(0);
     }
 
     // Run the migrations after the MatrixClientPeg has been assigned
+    checkSessionEpoch(epoch);
     SettingsStore.runMigrations(isFreshLogin);
 
     if (isFreshLogin && !credentials.guest) {
@@ -892,7 +952,14 @@ async function showStorageEvictedDialog(): Promise<boolean> {
 // `instanceof`. Babel 7 supports this natively in their class handling.
 class AbortLoginAndRebuildStorage extends Error {}
 
-async function persistCredentials(credentials: IMatrixClientCreds): Promise<void> {
+async function persistCredentials(credentials: IMatrixClientCreds, epoch = sessionEpoch): Promise<void> {
+    return withSessionStorageWork(() => {
+        checkSessionEpoch(epoch);
+        return persistCredentialsInternal(credentials);
+    });
+}
+
+async function persistCredentialsInternal(credentials: IMatrixClientCreds): Promise<void> {
     localStorage.setItem(HOMESERVER_URL_KEY, credentials.homeserverUrl);
     if (credentials.identityServerUrl) {
         localStorage.setItem(ID_SERVER_URL_KEY, credentials.identityServerUrl);
@@ -958,6 +1025,13 @@ async function doLogout(client: MatrixClient, oauth: OAuth2 | null): Promise<voi
 export async function logout(): Promise<void> {
     const client = MatrixClientPeg.get();
     if (!client) return;
+    const epoch = sessionEpoch;
+    const claimant = sessionClaimant();
+    const ownsSession = (): boolean =>
+        !sessionLockStolen &&
+        epoch === sessionEpoch &&
+        MatrixClientPeg.get() === client &&
+        sessionClaimant() === claimant;
 
     let oauth: OAuth2 | undefined;
     try {
@@ -969,37 +1043,48 @@ export async function logout(): Promise<void> {
         // This is fine
     }
 
-    PosthogAnalytics.instance.logout();
+    if (ownsSession()) PosthogAnalytics.instance.logout();
 
     if (client.isGuest()) {
         // logout doesn't work for guest sessions
         // Also we sometimes want to re-log in a guest session if we abort the login.
         // defer until next tick because it calls a synchronous dispatch, and we are likely here from a dispatch.
-        setTimeout(onLoggedOut, 0);
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        await onLoggedOut(client, epoch, claimant);
         return;
     }
 
-    _isLoggingOut = true;
-    try {
-        await disableCfsWebPush(client);
-    } catch (error) {
-        // Logout must still proceed: revoking the Matrix device is safer than leaving an active session because
-        // a browser cannot currently reach its push endpoint. The incomplete cleanup is explicit and observable.
-        logger.warn("CFS Web Push cleanup was incomplete before logout", error);
+    if (ownsSession()) {
+        _isLoggingOut = true;
+        try {
+            await disableCfsWebPush(client);
+        } catch (error) {
+            // Logout must still proceed: revoking the Matrix device is safer than leaving an active session because
+            // a browser cannot currently reach its push endpoint. The incomplete cleanup is explicit and observable.
+            logger.warn("CFS Web Push cleanup was incomplete before logout", error);
+        }
     }
-    PlatformPeg.get()?.destroyPickleKey(client.getSafeUserId(), client.getDeviceId() ?? "");
+    if (ownsSession()) {
+        await withSessionStorageWork(async () => {
+            if (ownsSession())
+                await PlatformPeg.get()?.destroyPickleKey(client.getSafeUserId(), client.getDeviceId() ?? "");
+        });
+    }
 
-    doLogout(client, oauth ?? null).then(onLoggedOut, (err) => {
-        // Just throwing an error here is going to be very unhelpful
-        // if you're trying to log out because your server's down and
-        // you want to log into a different server, so just forget the
-        // access token. It's annoying that this will leave the access
-        // token still valid, but we should fix this by having access
-        // tokens expire (and if you really think you've been compromised,
-        // change your password).
-        logger.warn("Failed to call logout API: token will not be invalidated", err);
-        onLoggedOut();
-    });
+    await doLogout(client, oauth ?? null).then(
+        () => onLoggedOut(client, epoch, claimant),
+        async (err) => {
+            // Just throwing an error here is going to be very unhelpful
+            // if you're trying to log out because your server's down and
+            // you want to log into a different server, so just forget the
+            // access token. It's annoying that this will leave the access
+            // token still valid, but we should fix this by having access
+            // tokens expire (and if you really think you've been compromised,
+            // change your password).
+            logger.warn("Failed to call logout API: token will not be invalidated", err);
+            await onLoggedOut(client, epoch, claimant);
+        },
+    );
 }
 
 export function softLogout(): void {
@@ -1049,7 +1134,9 @@ async function startMatrixClient(
     client: MatrixClient,
     startSyncing: boolean,
     clientPegOpts: MatrixClientPegAssignOpts,
+    epoch: number,
 ): Promise<void> {
+    checkSessionEpoch(epoch);
     logger.log(`Lifecycle: Starting MatrixClient`);
 
     // dispatch this before starting the matrix client: it's used
@@ -1081,13 +1168,14 @@ async function startMatrixClient(
         // index (e.g. the FilePanel), therefore initialize the event index
         // before the client.
         await EventIndexPeg.init();
+        checkSessionEpoch(epoch);
         await MatrixClientPeg.start(clientPegOpts);
     } else {
         logger.warn("Caller requested only auxiliary services be started");
         await MatrixClientPeg.assign(clientPegOpts);
     }
 
-    checkSessionLock();
+    checkSessionEpoch(epoch);
 
     // This needs to be started after crypto is set up
     DeviceListener.sharedInstance().start(client);
@@ -1116,11 +1204,26 @@ async function startMatrixClient(
  * Stops a running client and all related services, and clears persistent
  * storage. Used after a session has been logged out.
  */
-export async function onLoggedOut(): Promise<void> {
+export async function onLoggedOut(
+    expectedClient = MatrixClientPeg.get(),
+    epoch = sessionEpoch,
+    claimant = sessionClaimant(),
+): Promise<void> {
+    const ownsSession = (): boolean => {
+        const current = MatrixClientPeg.get();
+        return (
+            !sessionLockStolen &&
+            epoch === sessionEpoch &&
+            (!current || current === expectedClient) &&
+            (sessionClaimant() === claimant || sessionClaimant() === null)
+        );
+    };
+    if (!ownsSession()) return;
     // Ensure that we dispatch a view change **before** stopping the client,
     // that React components unmount first. This avoids React soft crashes
     // that can occur when components try to use a null client.
     dis.fire(Action.OnLoggedOut, true);
+    if (!ownsSession()) return;
     stopMatrixClient();
     try {
         await clearLocalCfsWebPushAfterSessionEnd();
@@ -1128,9 +1231,16 @@ export async function onLoggedOut(): Promise<void> {
         // Push cleanup is best-effort at this point. It must never prevent Matrix account/crypto storage deletion.
         logger.warn("CFS Web Push local cleanup failed; continuing the mandatory local account wipe", error);
     }
-    await clearStorage({ deleteEverything: true });
+    if (!ownsSession()) return;
+    await withSessionStorageWork(async () => {
+        if (ownsSession()) await clearStorageInternal({ deleteEverything: true });
+    });
+    if (!ownsSession()) return;
     LifecycleCustomisations.onLoggedOutAndStorageCleared?.();
-    await PlatformPeg.get()?.clearStorage();
+    await withSessionStorageWork(async () => {
+        if (ownsSession()) await PlatformPeg.get()?.clearStorage();
+    });
+    if (!ownsSession()) return;
     SettingsStore.reset();
 
     // Do this last, so we can make sure all storage has been cleared and all
@@ -1139,7 +1249,7 @@ export async function onLoggedOut(): Promise<void> {
         logger.log("Redirecting to external provider to finish logout");
         // XXX: Defer this so that it doesn't race with MatrixChat unmounting the world by going to /#/welcome
         window.setTimeout(() => {
-            window.location.href = SdkConfig.get().logout_redirect_url!;
+            if (ownsSession()) window.location.href = SdkConfig.get().logout_redirect_url!;
         }, 100);
     }
     // Do this last to prevent racing `stopMatrixClient` and `on_logged_out` with MatrixChat handling Session.logged_out
@@ -1150,7 +1260,14 @@ export async function onLoggedOut(): Promise<void> {
  * @param {object} opts Options for how to clear storage.
  * @returns {Promise} promise which resolves once the stores have been cleared
  */
-export async function clearStorage(opts?: { deleteEverything?: boolean }): Promise<void> {
+export async function clearStorage(opts?: { deleteEverything?: boolean }, epoch = sessionEpoch): Promise<void> {
+    return withSessionStorageWork(() => {
+        checkSessionEpoch(epoch);
+        return clearStorageInternal(opts);
+    });
+}
+
+async function clearStorageInternal(opts?: { deleteEverything?: boolean }): Promise<void> {
     logger.info(`Clearing storage, deleteEverything=${opts?.deleteEverything}`);
 
     if (window.localStorage) {

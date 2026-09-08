@@ -34,12 +34,21 @@ export function readCfsWebPushMutation(): CfsWebPushMutation | undefined {
     }
 }
 
-export function publishCfsWebPushMutation(): CfsWebPushMutation {
-    const operation: CfsWebPushMutation = { operationId: window.crypto.randomUUID() };
-    const stored: StoredMutation = { cfs_schema: 1, operationId: operation.operationId };
-    window.localStorage.setItem(MUTATION_KEY, JSON.stringify(stored));
-    assertCurrentCfsWebPushMutation(operation);
-    return operation;
+export async function publishCfsWebPushMutation(): Promise<CfsWebPushMutation> {
+    return navigator.locks.request("cfs-webpush-token-v1", { mode: "exclusive" }, () => {
+        const operation: CfsWebPushMutation = { operationId: window.crypto.randomUUID() };
+        const stored: StoredMutation = { cfs_schema: 1, operationId: operation.operationId };
+        window.localStorage.setItem(MUTATION_KEY, JSON.stringify(stored));
+        assertCurrentCfsWebPushMutation(operation);
+        return operation;
+    });
+}
+
+export async function invalidateCfsWebPushMutation(previous: CfsWebPushMutation | undefined): Promise<void> {
+    if (!previous) return;
+    await navigator.locks.request("cfs-webpush-token-v1", { mode: "exclusive" }, () => {
+        if (isCurrentCfsWebPushMutation(previous)) window.localStorage.removeItem(MUTATION_KEY);
+    });
 }
 
 export function isCurrentCfsWebPushMutation(operation: CfsWebPushMutation): boolean {
@@ -62,6 +71,6 @@ export async function waitForCurrentCfsWebPushMutation<T>(
     return result;
 }
 
-export function supersedeCfsWebPushMutation(): string {
-    return publishCfsWebPushMutation().operationId;
+export async function supersedeCfsWebPushMutation(): Promise<string> {
+    return (await publishCfsWebPushMutation()).operationId;
 }
